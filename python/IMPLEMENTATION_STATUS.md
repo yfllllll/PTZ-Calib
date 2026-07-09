@@ -67,15 +67,26 @@ python run_ptz_ba.py \
   --max_iter 100
 ```
 
-## Known Simplifications
+## Implementation Details
 
-- **Initial pair estimation**: Uses heuristics based on feature count and disparity
-  (C++ uses full essential matrix decomposition). Cameras are expected to be
-  pre-initialized with reasonable values.
-- **Parameter constraints**: The `SubsetParameterization` (for fixing specific
-  parameter indices) is simplified — full support requires additional pyceres
-  manifold setup.
-- **Global BA frequency**: Simplified triggering compared to C++'s adaptive strategy.
+### Parameter Constraints (SubsetManifold)
+✅ **Fully implemented** — PTZRayOptimizer uses `pyceres.SubsetManifold` to exactly match C++'s `SubsetParameterization`:
+- Fixes cx, cy, distortion params based on FactorType
+- Fixes extrinsics translation (t1, t2, t3)
+- KRTOptimizer uses scipy bounds (mathematically equivalent for box constraints)
+
+### Initial Pair Estimation
+The C++ code uses homography matrix H (not essential matrix) to initialize camera rotation:
+```cpp
+R_j = K_j^{-1} * H * K_i * R_i
+```
+Python implementation supports this via `matches_info.H`. If cameras lack initial values, you can:
+- Use `SetInitialImagePairParameters()` to set focal length heuristics
+- Or pre-calibrate cameras with known PTZ parameters
+
+### Global BA Frequency
+Python uses fixed-frequency triggering (`every N images`). C++ uses adaptive strategy based on track quality. For most datasets, fixed frequency works well. You can adjust `kBaGlobalImagesRatio` in the code if needed.
+
 
 ## Optional Future Enhancements
 
