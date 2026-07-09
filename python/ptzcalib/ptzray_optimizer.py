@@ -342,6 +342,9 @@ class PTZRayOptimizer:
         if self.pixels_ and any(len(p) > 0 for p in self.pixels_):
             self._add_constraints_2d3d(problem)
         
+        # Add parameter manifolds (SubsetParameterization in C++)
+        self._set_parameter_manifolds(problem)
+        
         options = pyceres.SolverOptions()
         options.max_num_iterations = self.max_iter_
         options.linear_solver_type = pyceres.LinearSolverType.SPARSE_SCHUR
@@ -351,6 +354,26 @@ class PTZRayOptimizer:
         
         self._obtain_refined_camera_params(cameras_out, rays_out)
         return True
+    
+    def _set_parameter_manifolds(self, problem):
+        """Set SubsetManifold for parameters (matches C++ SubsetParameterization)."""
+        # Intrinsics: fix certain parameters based on factor type
+        for ic_id in self.intrinsics_param_.keys():
+            if self.type_ == FactorType.PTZRay:
+                # Fix cx, cy, k1, k2, k3, p1, p2 (indices 2,3,4,5,6,7,8)
+                manifold = pyceres.SubsetManifold(9, [2, 3, 4, 5, 6, 7, 8])
+                problem.SetManifold(self.intrinsics_param_[ic_id], manifold)
+            elif self.type_ == FactorType.PTZRayDistDisp:
+                # Fix cx, cy, k2, k3, p1, p2 (indices 2,3,5,6,7,8)
+                manifold = pyceres.SubsetManifold(9, [2, 3, 5, 6, 7, 8])
+                problem.SetManifold(self.intrinsics_param_[ic_id], manifold)
+            # PTZRayDist and PTZRayFxfyDist don't fix intrinsics
+        
+        # Extrinsics: fix translation t (indices 3,4,5)
+        for i in self.extrinsics_param_.keys():
+            manifold = pyceres.SubsetManifold(6, [3, 4, 5])
+            problem.SetManifold(self.extrinsics_param_[i], manifold)
+
     
     def _add_constraints_2d2d(self, problem):
         for track_id, track in self.tracks_.items():
