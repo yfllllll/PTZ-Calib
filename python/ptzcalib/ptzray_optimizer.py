@@ -253,7 +253,176 @@ class PTZRayOptimizer:
     
     def __init__(self, features, matches_info, cameras, cam_ids, max_iter, factor_type,
                  pixels=None, pts3d=None):
-        pass
+        self.features_ = features
+        self.matches_info_ = matches_info
+        self.cameras_ = [cam.clone() for cam in cameras]
+        self.num_cams_ = len(cameras)
+        self.cam_ids_ = set(cam_ids)
+        self.max_iter_ = max_iter
+        self.type_ = factor_type
+        self.pixels_ = pixels if pixels else []
+        self.pts3d_ = pts3d if pts3d else []
+        
+        self.shared_ic_ids_ = list(range(len(cameras)))
+        self.intrinsics_param_ = {}
+        self.extrinsics_param_ = {}
+        self.rays_param_ = {}
+        self.disp_param_ = [0.0, 0.0, 0.0]
+        self.tlw_param_ = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.tracks_ = {}
+        
+        self._find_tracks()
+        self._set_up_initial_camera_params()
+        self._set_init_trans_local_to_world()
     
-    def solve(self, cameras, rays=None):
-        pass
+    def _is_candidate(self, image_id):
+        return image_id in self.cam_ids_
+    
+    def _find_tracks(self):
+        builder = TracksBuilder()
+        for m in self.matches_info_:
+            if m.src_img_idx >= len(self.features_) or m.dst_img_idx >= len(self.features_):
+                continue
+            src_feat = self.features_[m.src_img_idx]
+            dst_feat = self.features_[m.dst_img_idx]
+            for dm in m.matches:
+                if dm.queryIdx < len(src_feat.keypoints) and dm.trainIdx < len(dst_feat.keypoints):
+                    if m.inliers_mask and len(m.inliers_mask) > len(builder._nodes):
+                        if m.inliers_mask[dm.queryIdx]:
+                            builder.insert(m.src_img_idx, dm.queryIdx, m.dst_img_idx, dm.trainIdx)
+                    else:
+                        builder.insert(m.src_img_idx, dm.queryIdx, m.dst_img_idx, dm.trainIdx)
+        builder.filter(2)
+        self.tracks_ = builder.export_to_STL()
+    
+    def _set_up_initial_camera_params(self):
+        for i in range(self.num_cams_):
+            ic_id = self.shared_ic_ids_[i]
+            cam = self.cameras_[i]
+            if ic_id not in self.intrinsics_param_:
+                self.intrinsics_param_[ic_id] = np.array([
+                    cam.K_[0,0], cam.K_[1,1], cam.K_[0,2], cam.K_[1,2],
+                    cam.dist_[0,0], cam.dist_[1,0], cam.dist_[2,0], cam.dist_[3,0], cam.dist_[4,0]
+                ], dtype=np.float64)
+            rvec, _ = cv2.Rodrigues(cam.R_)
+            self.extrinsics_param_[i] = np.array([rvec[0,0], rvec[1,0], rvec[2,0], 0, 0, 0], dtype=np.float64)
+        
+        for track_id, track in self.tracks_.items():
+            ray = self._pix2ray(track)
+            if ray is not None and ray.shape[0] == 3:
+                self.rays_param_[track_id] = ray.reshape(-1).copy()
+    
+    def _pix2ray(self, track):
+        ray_sum = np.zeros((3, 1), dtype=np.float64)
+        count = 0
+        for img_id, feat_id in track.items():
+            if not self._is_candidate(img_id):
+                continue
+            if img_id >= len(self.features_) or feat_id >= len(self.features_[img_id].keypoints):
+                continue
+            pt = self.features_[img_id].keypoints[feat_id].pt
+            uv = np.array([[pt[0]], [pt[1]], [1.0]], dtype=np.float64)
+            cam = self.cameras_[img_id]
+            ray_temp = np.linalg.inv(cam.R_) @ np.linalg.inv(cam.K_) @ uv
+            ray_temp = ray_temp / np.linalg.norm(ray_temp)
+            ray_sum += ray_temp
+            count += 1
+        if count > 0:
+            ray_sum = ray_sum / count
+            ray_sum = ray_sum / np.linalg.norm(ray_sum)
+            return ray_sum
+        return None
+    
+    def _set_init_trans_local_to_world(self):
+        self.tlw_param_ = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    
+    def solve(self, cameras_out, rays_out=None):
+        problem = pyceres.Problem()
+        self._add_constraints_2d2d(problem)
+        if self.pixels_ and any(len(p) > 0 for p in self.pixels_):
+            self._add_constraints_2d3d(problem)
+        
+        options = pyceres.SolverOptions()
+        options.max_num_iterations = self.max_iter_
+        options.linear_solver_type = pyceres.LinearSolverType.SPARSE_SCHUR
+        options.minimizer_progress_to_stdout = False
+        summary = pyceres.Summary()
+        pyceres.Solve(options, problem, summary)
+        
+        self._obtain_refined_camera_params(cameras_out, rays_out)
+        return True
+    
+    def _add_constraints_2d2d(self, problem):
+        for track_id, track in self.tracks_.items():
+            if track_id not in self.rays_param_:
+                continue
+            for img_id, feat_id in track.items():
+                if not self._is_candidate(img_id):
+                    continue
+                if img_id >= len(self.features_) or feat_id >= len(self.features_[img_id].keypoints):
+                    continue
+                uv = self.features_[img_id].keypoints[feat_id].pt
+                ic_id = self.shared_ic_ids_[img_id]
+                
+                if self.type_ == FactorType.PTZRay:
+                    cost = PTZRayFactor(uv)
+                    problem.AddResidualBlock(cost, None, 
+                        self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id])
+                elif self.type_ == FactorType.PTZRayDist:
+                    cost = PTZRayDistFactor(uv)
+                    problem.AddResidualBlock(cost, None,
+                        self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id])
+                elif self.type_ == FactorType.PTZRayFxfyDist:
+                    cost = PTZRayFxfyDistFactor(uv)
+                    problem.AddResidualBlock(cost, None,
+                        self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id])
+                elif self.type_ == FactorType.PTZRayDistDisp:
+                    cost = PTZRayDistDispFactor(uv)
+                    problem.AddResidualBlock(cost, None,
+                        self.intrinsics_param_[ic_id], self.disp_param_, self.extrinsics_param_[img_id], self.rays_param_[track_id])
+    
+    def _add_constraints_2d3d(self, problem):
+        for i in range(self.num_cams_):
+            if not self._is_candidate(i):
+                continue
+            if not self.pixels_ or i >= len(self.pixels_) or not self.pixels_[i]:
+                continue
+            ic_id = self.shared_ic_ids_[i]
+            for j in range(len(self.pixels_[i])):
+                if self.type_ == FactorType.PTZRayDistDisp:
+                    cost = Reproj2d3dDispFactor(self.pixels_[i][j], self.pts3d_[i][j])
+                    problem.AddResidualBlock(cost, None,
+                        self.intrinsics_param_[ic_id], self.disp_param_, self.extrinsics_param_[i], self.tlw_param_)
+                else:
+                    cost = Reproj2d3dFactor(self.pixels_[i][j], self.pts3d_[i][j])
+                    problem.AddResidualBlock(cost, None,
+                        self.intrinsics_param_[ic_id], self.extrinsics_param_[i], self.tlw_param_)
+    
+    def _obtain_refined_camera_params(self, cameras_out, rays_out):
+        for i in range(self.num_cams_):
+            ic_id = self.shared_ic_ids_[i]
+            intr = self.intrinsics_param_[ic_id]
+            extr = self.extrinsics_param_[i]
+            cameras_out[i].K_ = np.array([[intr[0], 0, intr[2]], [0, intr[1], intr[3]], [0, 0, 1]], dtype=np.float64)
+            cameras_out[i].R_, _ = cv2.Rodrigues(extr[:3].reshape(3, 1))
+            cameras_out[i].t_ = extr[3:6].reshape(3, 1)
+            cameras_out[i].dist_ = intr[4:9].reshape(5, 1)
+        
+        if rays_out is not None:
+            rays_out.clear()
+            rays_out.extend([[] for _ in range(self.num_cams_)])
+            R_l_w, _ = cv2.Rodrigues(self.tlw_param_[:3].reshape(3, 1))
+            t_l_w = self.tlw_param_[3:6].reshape(3, 1)
+            R_w_l = R_l_w.T
+            t_w_l = -R_w_l @ t_l_w
+            for track_id, track in self.tracks_.items():
+                if track_id not in self.rays_param_:
+                    continue
+                ray_l = self.rays_param_[track_id].reshape(3, 1)
+                ray_w = R_w_l @ ray_l + t_w_l
+                for img_id, feat_id in track.items():
+                    if img_id >= len(self.features_) or feat_id >= len(self.features_[img_id].keypoints):
+                        continue
+                    uv = self.features_[img_id].keypoints[feat_id].pt
+                    rays_out[img_id].append(Ray(track_id, ray_w, uv))
+
