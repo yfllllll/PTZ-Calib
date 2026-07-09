@@ -1,2 +1,10 @@
 .DS_Store
 .vscode
+__pycache__/
+*.py[cod]
+data/
+output*/
+ptzcalib_dataset.zip
+3rdparty/
+install/
+build*/

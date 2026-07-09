@@ -15,6 +15,28 @@ using namespace std;
 
 namespace ptzcalib {
 
+namespace {
+
+bool HasNoSubsetConstraint(ceres::Problem& problem, double* param)
+{
+#if CERES_VERSION_MAJOR >= 2
+  return problem.GetManifold(param) == nullptr;
+#else
+  return problem.GetParameterization(param) == nullptr;
+#endif
+}
+
+void SetSubsetConstraint(ceres::Problem& problem, double* param, int size, const vector<int>& constant_parameters)
+{
+#if CERES_VERSION_MAJOR >= 2
+  problem.SetManifold(param, new ceres::SubsetManifold(size, constant_parameters));
+#else
+  problem.SetParameterization(param, new ceres::SubsetParameterization(size, constant_parameters));
+#endif
+}
+
+}  // namespace
+
 /////////////////////////////////// PTZRayFactor /////////////////////////////////////
 
 bool PTZRayFactor::operator()(const double* const intrinsics, const double* const extrinsics, const double* const ray,
@@ -855,20 +877,16 @@ void PTZRayOptimizer::AddConstraints2d2d()
       continue;
     long ic_id = shared_ic_ids_[i];
 
-    if (problem_.HasParameterBlock(intrinsics_param_.at(ic_id).data()) &&
-        problem_.GetParameterization((intrinsics_param_.at(ic_id).data())) == nullptr) {
-      ceres::SubsetParameterization* constant_parameterization_i = nullptr;
+    if (problem_.HasParameterBlock(intrinsics_param_.at(ic_id).data()) && HasNoSubsetConstraint(problem_, intrinsics_param_.at(ic_id).data())) {
       switch (type_) {
         case PTZRay:
-          constant_parameterization_i = new ceres::SubsetParameterization(9, {2, 3, 4, 5, 6, 7, 8});  // cx, cy, k1, k2, k3, p1, p2
-          problem_.SetParameterization(intrinsics_param_.at(ic_id).data(), constant_parameterization_i);
+          SetSubsetConstraint(problem_, intrinsics_param_.at(ic_id).data(), 9, {2, 3, 4, 5, 6, 7, 8});  // cx, cy, k1, k2, k3, p1, p2
           break;
 
         case PTZRayDist:
         case PTZRayFxfyDist:
         case PTZRayDistDisp:
-          constant_parameterization_i = new ceres::SubsetParameterization(9, {2, 3, 5, 6, 7, 8});  // cx, cy, k2, k3, p1, p2
-          problem_.SetParameterization(intrinsics_param_.at(ic_id).data(), constant_parameterization_i);
+          SetSubsetConstraint(problem_, intrinsics_param_.at(ic_id).data(), 9, {2, 3, 5, 6, 7, 8});  // cx, cy, k2, k3, p1, p2
           break;
 
         default:
@@ -876,10 +894,8 @@ void PTZRayOptimizer::AddConstraints2d2d()
       }
     }
 
-    if (problem_.HasParameterBlock(extrinsics_param_.at(i).data()) &&
-        problem_.GetParameterization(extrinsics_param_.at(i).data()) == nullptr) {
-      auto* constant_parameterization_i = new ceres::SubsetParameterization(6, {3, 4, 5});  // t1, t2, t3
-      problem_.SetParameterization(extrinsics_param_.at(i).data(), constant_parameterization_i);
+    if (problem_.HasParameterBlock(extrinsics_param_.at(i).data()) && HasNoSubsetConstraint(problem_, extrinsics_param_.at(i).data())) {
+      SetSubsetConstraint(problem_, extrinsics_param_.at(i).data(), 6, {3, 4, 5});  // t1, t2, t3
     }
   }
 }
@@ -928,20 +944,16 @@ void PTZRayOptimizer::AddConstraints2d3d()
       continue;
     long ic_id = shared_ic_ids_[i];
 
-    if (problem_.HasParameterBlock(intrinsics_param_.at(ic_id).data()) &&
-        problem_.GetParameterization((intrinsics_param_.at(ic_id).data())) == nullptr) {
-      ceres::SubsetParameterization* constant_parameterization_i = nullptr;
+    if (problem_.HasParameterBlock(intrinsics_param_.at(ic_id).data()) && HasNoSubsetConstraint(problem_, intrinsics_param_.at(ic_id).data())) {
       switch (type_) {
         case PTZRay:
-          constant_parameterization_i = new ceres::SubsetParameterization(9, {2, 3, 4, 5, 6, 7, 8});  // cx, cy, k1, k2, k3, p1, p2
-          problem_.SetParameterization(intrinsics_param_.at(ic_id).data(), constant_parameterization_i);
+          SetSubsetConstraint(problem_, intrinsics_param_.at(ic_id).data(), 9, {2, 3, 4, 5, 6, 7, 8});  // cx, cy, k1, k2, k3, p1, p2
           break;
 
         case PTZRayDist:
         case PTZRayFxfyDist:
         case PTZRayDistDisp:
-          constant_parameterization_i = new ceres::SubsetParameterization(9, {2, 3, 5, 6, 7, 8});  // cx, cy, k2, k3, p1, p2
-          problem_.SetParameterization(intrinsics_param_.at(ic_id).data(), constant_parameterization_i);
+          SetSubsetConstraint(problem_, intrinsics_param_.at(ic_id).data(), 9, {2, 3, 5, 6, 7, 8});  // cx, cy, k2, k3, p1, p2
           break;
 
         default:
@@ -949,10 +961,8 @@ void PTZRayOptimizer::AddConstraints2d3d()
       }
     }
 
-    if (problem_.HasParameterBlock(extrinsics_param_.at(i).data()) &&
-        problem_.GetParameterization(extrinsics_param_.at(i).data()) == nullptr) {
-      auto* constant_parameterization_i = new ceres::SubsetParameterization(6, {3, 4, 5});  // t1, t2, t3
-      problem_.SetParameterization(extrinsics_param_.at(i).data(), constant_parameterization_i);
+    if (problem_.HasParameterBlock(extrinsics_param_.at(i).data()) && HasNoSubsetConstraint(problem_, extrinsics_param_.at(i).data())) {
+      SetSubsetConstraint(problem_, extrinsics_param_.at(i).data(), 6, {3, 4, 5});  // t1, t2, t3
     }
   }
 }

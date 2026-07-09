@@ -1,7 +1,6 @@
 """Incremental PTZ calibration optimizer.
 
 Python port of src/core/ptz_incremental_optimizer.{h,cc}.
-Simplified implementation focusing on core functionality.
 """
 
 from typing import Dict, List, Set, Optional
@@ -19,8 +18,21 @@ class PtzIncrementalOptimizer:
     kMaxNumImages = 100000
     kBaGlobalImagesRatio = 1.1
     
-    def __init__(self, features: List[ImageFeatures], matches_info: List[MatchesInfo],
-                 cameras: List[Camera], max_iter: int, names: Optional[List[str]] = None):
+    def __init__(
+        self,
+        features: List[ImageFeatures],
+        matches_info: List[MatchesInfo],
+        cameras: List[Camera],
+        names_or_max_iter,
+        max_iter: Optional[int] = None,
+    ):
+        if max_iter is None:
+            names = None
+            max_iter = int(names_or_max_iter)
+        else:
+            names = list(names_or_max_iter)
+            max_iter = int(max_iter)
+
         self.features_ = features
         self.matches_info_ = matches_info
         self.cameras_ = [cam.clone() for cam in cameras]
@@ -133,12 +145,12 @@ class PtzIncrementalOptimizer:
                 confidences[m.src_img_idx] += m.confidence
                 confidences[m.dst_img_idx] += m.confidence
         indices = list(range(len(self.features_)))
-        indices.sort(key=lambda idx: confidences[idx], reverse=True)
+        indices.sort(key=lambda idx: (-confidences[idx], idx))
         return [idx for idx in indices if confidences[idx] > 0.0]
     
     def _find_second_initial_image(self, image_id1: int) -> List[int]:
         """Find candidate second images for pairing with image_id1."""
-        scores = []
+        confidences = [0.0] * len(self.features_)
         for m in self.matches_info_:
             if m.src_img_idx == image_id1:
                 other_id = m.dst_img_idx
@@ -154,10 +166,11 @@ class PtzIncrementalOptimizer:
             if self._cal_pixel_diff(m.src_img_idx, m.dst_img_idx, m.matches) < 50:
                 continue
             
-            scores.append((other_id, m.confidence))
+            confidences[other_id] += m.confidence
         
-        scores.sort(key=lambda x: x[1], reverse=True)
-        return [s[0] for s in scores if s[1] > 0.0]
+        indices = list(range(len(self.features_)))
+        indices.sort(key=lambda idx: (-confidences[idx], idx))
+        return [idx for idx in indices if confidences[idx] > 0.0]
     
     def _find_next_images(self) -> List[int]:
         """Find next images to register (connected to registered images)."""
@@ -183,7 +196,7 @@ class PtzIncrementalOptimizer:
                 confidences[src_idx] += m.confidence
 
         indices = list(range(len(self.features_)))
-        indices.sort(key=lambda idx: confidences[idx], reverse=True)
+        indices.sort(key=lambda idx: (-confidences[idx], idx))
         return [idx for idx in indices if confidences[idx] > 0.0]
     
     def _cal_pixel_diff(self, image_id1: int, image_id2: int, matches: List) -> float:

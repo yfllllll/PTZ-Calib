@@ -17,6 +17,28 @@ using namespace std;
 
 namespace ptzcalib {
 
+namespace {
+
+bool HasNoSubsetConstraint(ceres::Problem& problem, double* param)
+{
+#if CERES_VERSION_MAJOR >= 2
+  return problem.GetManifold(param) == nullptr;
+#else
+  return problem.GetParameterization(param) == nullptr;
+#endif
+}
+
+void SetSubsetConstraint(ceres::Problem& problem, double* param, int size, const vector<int>& constant_parameters)
+{
+#if CERES_VERSION_MAJOR >= 2
+  problem.SetManifold(param, new ceres::SubsetManifold(size, constant_parameters));
+#else
+  problem.SetParameterization(param, new ceres::SubsetParameterization(size, constant_parameters));
+#endif
+}
+
+}  // namespace
+
 /////////////////////////////////////// Factor2d2d ////////////////////////////////////////////////
 
 bool Factor2d2d::operator()(const double* const camera, double* residual) const
@@ -315,30 +337,22 @@ void KRTOptimizer::Add2d2dConstraints(const Camera& cam_ref, const std::vector<c
   }
 
   // fix some parameters
-  if (problem_.HasParameterBlock(cam_curr_local_param_.data()) && problem_.GetParameterization(cam_curr_local_param_.data()) == nullptr) {
-    ceres::SubsetParameterization* constant_parameterization = nullptr;
+  if (problem_.HasParameterBlock(cam_curr_local_param_.data()) && HasNoSubsetConstraint(problem_, cam_curr_local_param_.data())) {
     switch (factor_type_) {
       case F:
-        constant_parameterization =
-            new ceres::SubsetParameterization(15, {1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 14});  // fy, cx, cy, t[0:2], dist[0:4]
-        problem_.SetParameterization(cam_curr_local_param_.data(), constant_parameterization);
+        SetSubsetConstraint(problem_, cam_curr_local_param_.data(), 15, {1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 14});  // fy, cx, cy, t[0:2], dist[0:4]
         break;
 
       case Fxfy:
-        constant_parameterization =
-            new ceres::SubsetParameterization(15, {2, 3, 7, 8, 9, 10, 11, 12, 13, 14});  // cx, cy, t[0:2], dist[0:4]
-        problem_.SetParameterization(cam_curr_local_param_.data(), constant_parameterization);
+        SetSubsetConstraint(problem_, cam_curr_local_param_.data(), 15, {2, 3, 7, 8, 9, 10, 11, 12, 13, 14});  // cx, cy, t[0:2], dist[0:4]
         break;
 
       case FDist:
-        constant_parameterization =
-            new ceres::SubsetParameterization(15, {1, 2, 3, 7, 8, 9, 11, 12, 13, 14});  // fy, cx, cy, t[0:2], dist[1:4]
-        problem_.SetParameterization(cam_curr_local_param_.data(), constant_parameterization);
+        SetSubsetConstraint(problem_, cam_curr_local_param_.data(), 15, {1, 2, 3, 7, 8, 9, 11, 12, 13, 14});  // fy, cx, cy, t[0:2], dist[1:4]
         break;
 
       case FxfyDist:
-        constant_parameterization = new ceres::SubsetParameterization(15, {2, 3, 7, 8, 9, 11, 12, 13, 14});  // cx, cy, t[0:2], dist[1:4]
-        problem_.SetParameterization(cam_curr_local_param_.data(), constant_parameterization);
+        SetSubsetConstraint(problem_, cam_curr_local_param_.data(), 15, {2, 3, 7, 8, 9, 11, 12, 13, 14});  // cx, cy, t[0:2], dist[1:4]
         break;
 
       default:

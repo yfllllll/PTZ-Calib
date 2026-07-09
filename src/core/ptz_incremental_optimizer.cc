@@ -21,6 +21,19 @@ using namespace std;
 
 namespace ptzcalib {
 
+namespace {
+
+void SortIndicesByConfidence(vector<long>& indices, const vector<float>& confidences_rank)
+{
+  sort(indices.begin(), indices.end(), [&](long A, long B) -> bool {
+    if (confidences_rank[A] == confidences_rank[B])
+      return A < B;
+    return confidences_rank[A] > confidences_rank[B];
+  });
+}
+
+}  // namespace
+
 long PtzIncrementalOptimizer::kMaxNumImages = 100000;
 float PtzIncrementalOptimizer::kBaGlobalImagesRatio = 1.1;
 
@@ -191,7 +204,7 @@ vector<long> PtzIncrementalOptimizer::FindFirstInitialImage() const
 
   vector<long> indices(num_imgs);
   iota(indices.begin(), indices.end(), 0);
-  sort(indices.begin(), indices.end(), [&](int A, int B) -> bool { return confidences_rank[A] > confidences_rank[B]; });
+  SortIndicesByConfidence(indices, confidences_rank);
 
   vector<long> sorted_images_ids;
   for (auto& index : indices) {
@@ -231,7 +244,7 @@ vector<long> PtzIncrementalOptimizer::FindSecondInitialImage(long image_id1) con
 
   vector<long> indices(num_imgs);
   iota(indices.begin(), indices.end(), 0);
-  sort(indices.begin(), indices.end(), [&](int A, int B) -> bool { return confidences_rank[A] > confidences_rank[B]; });
+  SortIndicesByConfidence(indices, confidences_rank);
 
   vector<long> sorted_images_ids;
   for (auto& index : indices) {
@@ -283,7 +296,7 @@ std::vector<long> PtzIncrementalOptimizer::FindNextImages() const
 
   vector<long> indices(num_imgs);
   iota(indices.begin(), indices.end(), 0);
-  sort(indices.begin(), indices.end(), [&](int A, int B) -> bool { return confidences_rank[A] > confidences_rank[B]; });
+  SortIndicesByConfidence(indices, confidences_rank);
 
   vector<long> sorted_images_ids;
   for (auto& index : indices) {
