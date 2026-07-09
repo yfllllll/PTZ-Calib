@@ -31,8 +31,41 @@ python/
 
 See original C++ project README for dataset download and usage examples.
 
-## Implementation Notes
+## Implementation Status
 
-- Uses `scipy.optimize.least_squares` for nonlinear optimization (replaces Ceres)
-- Numeric differentiation for all cost functions
-- Maintains API compatibility with C++ version where possible
+**Functional — Core Pipeline Complete!**
+
+### Modules Ported
+- ✅ `types.py` — Camera, ImageFeatures, MatchesInfo, Ray
+- ✅ `union_find.py` — Union-Find data structure
+- ✅ `tracks.py` — Track building from matches
+- ✅ `data_io.py` — JSON I/O
+- ✅ `krt_optimizer.py` — KRT optimization (6 cost functions)
+- ✅ `ptzray_optimizer.py` — PTZ-Ray optimizer (6 cost functions, pyceres)
+- ✅ `ptz_incremental_optimizer.py` — Incremental BA pipeline
+- ✅ `run_ptz_ba.py` — Application entry point
+
+### Implementation Notes
+- **Optimizer**: Uses `pyceres` (Python bindings for Ceres Solver) for numerical
+  equivalence with C++ version. Falls back to `scipy.optimize.least_squares` if
+  pyceres unavailable.
+- **All cost functions faithfully port the C++ math**: same distortion model,
+  same projection equations, same displacement model.
+- **API compatibility**: Maintains similar API to C++ where possible for
+  easy porting of application code.
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run PTZ Bundle Adjustment
+python run_ptz_ba.py \
+  --features_dir data/features \
+  --matches_file data/matches.json \
+  --cameras_in data/cameras_init.json \
+  --cameras_out data/cameras_optimized.json \
+  --max_iter 100
+```
+
