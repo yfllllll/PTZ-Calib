@@ -29,6 +29,7 @@ python/
 ## Usage
 
 See original C++ project README for dataset download and usage examples.
+For image-only input, see [IMAGE_ONLY_TUTORIAL.md](IMAGE_ONLY_TUTORIAL.md).
 
 ## Implementation Status
 

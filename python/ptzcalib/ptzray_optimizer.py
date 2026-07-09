@@ -531,19 +531,25 @@ class PTZRayOptimizer:
         """Set SubsetManifold for parameters (matches C++ SubsetParameterization)."""
         # Intrinsics: fix certain parameters based on factor type
         for ic_id in self.intrinsics_param_.keys():
+            param = self.intrinsics_param_[ic_id]
+            if not problem.has_parameter_block(param) or problem.has_manifold(param):
+                continue
             if self.type_ == FactorType.PTZRay:
                 # Fix cx, cy, k1, k2, k3, p1, p2 (indices 2,3,4,5,6,7,8)
                 manifold = pyceres.SubsetManifold(9, [2, 3, 4, 5, 6, 7, 8])
-                problem.set_manifold(self.intrinsics_param_[ic_id], manifold)
+                problem.set_manifold(param, manifold)
             elif self.type_ in (FactorType.PTZRayDist, FactorType.PTZRayFxfyDist, FactorType.PTZRayDistDisp):
                 # Fix cx, cy, k2, k3, p1, p2 (indices 2,3,5,6,7,8)
                 manifold = pyceres.SubsetManifold(9, [2, 3, 5, 6, 7, 8])
-                problem.set_manifold(self.intrinsics_param_[ic_id], manifold)
+                problem.set_manifold(param, manifold)
         
         # Extrinsics: fix translation t (indices 3,4,5)
         for i in self.extrinsics_param_.keys():
+            param = self.extrinsics_param_[i]
+            if not problem.has_parameter_block(param) or problem.has_manifold(param):
+                continue
             manifold = pyceres.SubsetManifold(6, [3, 4, 5])
-            problem.set_manifold(self.extrinsics_param_[i], manifold)
+            problem.set_manifold(param, manifold)
 
     
     def _add_constraints_2d2d(self, problem):

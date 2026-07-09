@@ -18,6 +18,7 @@ import itertools
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -26,6 +27,10 @@ import numpy as np
 
 
 VALID_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}
+
+
+def _natural_key(value: str):
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", value)]
 
 
 def _to_numpy(value):
@@ -174,7 +179,7 @@ class FeatureBank:
 
 def list_images(image_dir: str) -> List[str]:
     names = []
-    for name in sorted(os.listdir(image_dir)):
+    for name in sorted(os.listdir(image_dir), key=_natural_key):
         root, ext = os.path.splitext(name)
         if ext.lower() not in VALID_IMAGE_EXTS:
             continue
