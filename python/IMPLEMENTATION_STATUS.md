@@ -23,7 +23,7 @@ To achieve **numerically equivalent** behavior to the original C++ implementatio
 | `ptzray_optimizer.py` | `ptzray_optimizer.{h,cc}` | ✅ Done | ~430 |
 | `ptz_incremental_optimizer.py` | `ptz_incremental_optimizer.{h,cc}` | ✅ Done | ~270 |
 | `run_ptz_ba.py` | `run_ptz_ba.{h,cc}` | ✅ Done | ~90 |
-| `run_ptz_reloc.py` | `run_ptz_reloc.{h,cc}` | 🚧 Optional | - |
+| `run_ptz_reloc.py` | `run_ptz_reloc.{h,cc}` | ✅ Done | ~130 |
 
 **Total ported**: ~2064 lines of Python code across 8 modules.
 
@@ -85,13 +85,13 @@ Python implementation supports this via `matches_info.H`. If cameras lack initia
 - Or pre-calibrate cameras with known PTZ parameters
 
 ### Global BA Frequency
-Python uses fixed-frequency triggering (`every N images`). C++ uses adaptive strategy based on track quality. For most datasets, fixed frequency works well. You can adjust `kBaGlobalImagesRatio` in the code if needed.
+Python now follows the C++ adaptive trigger based on `kBaGlobalImagesRatio`: after registering enough new images, it attempts global BA and rolls back the latest registration if global BA fails.
 
 
 ## Optional Future Enhancements
 
-- [ ] `run_ptz_reloc.py` — Relocalization application (~250 lines)
-- [ ] Full SubsetManifold integration for exact C++ parity
+- [x] `run_ptz_reloc.py` — Relocalization application
+- [x] Full SubsetManifold integration for PTZRayOptimizer
 - [ ] Comprehensive unit tests
 - [ ] Benchmark against C++ on WorldCup14 and synthetic datasets
 

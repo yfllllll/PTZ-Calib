@@ -37,6 +37,31 @@ class TracksBuilder:
         # Ordered list of (pair, index) for stable iteration matching C++ ordering.
         self._nodes: List[IndexedFeaturePair] = []
         self.uf_tree_ = UnionFind()
+        self._pending_matches: List[Tuple[int, int, int, int]] = []
+
+    def insert(self, img_id1: int, feat_id1: int, img_id2: int, feat_id2: int) -> None:
+        """Queue one feature correspondence.
+
+        This mirrors the incremental insertion style used by some Python code.
+        The C++ implementation builds from MatchesInfo in one pass; queued
+        matches are materialized by build_from_inserted().
+        """
+        self._pending_matches.append((img_id1, feat_id1, img_id2, feat_id2))
+
+    def build_from_inserted(self) -> None:
+        all_features: Set[IndexedFeaturePair] = set()
+        for i, fi, j, fj in self._pending_matches:
+            all_features.add((i, fi))
+            all_features.add((j, fj))
+
+        self._nodes = sorted(all_features)
+        self.map_node_to_index_ = {feat: idx for idx, feat in enumerate(self._nodes)}
+        self.uf_tree_.init_sets(len(self._nodes))
+
+        for i, fi, j, fj in self._pending_matches:
+            index_i = self.map_node_to_index_[(i, fi)]
+            index_j = self.map_node_to_index_[(j, fj)]
+            self.uf_tree_.union(index_i, index_j)
 
     def build(self, matches_info: List[MatchesInfo]) -> None:
         # 1. Collect all unique (image_id, feature_id) tuples.
@@ -68,8 +93,14 @@ class TracksBuilder:
                 index_j = self.map_node_to_index_[(j, m.trainIdx)]
                 self.uf_tree_.union(index_i, index_j)
 
+    # C++-style aliases.
+    Build = build
+
     def filter(self, min_track_length: int = 2) -> None:
         """Filter out invalid or too-short tracks."""
+        if self._pending_matches and not self._nodes:
+            self.build_from_inserted()
+
         tracks_map: Dict[int, Set[int]] = {}  # track_id -> {image_id, ...}
         problematic_track_id: Set[int] = set()
 
@@ -99,8 +130,13 @@ class TracksBuilder:
                 cc_size[root] = 1
                 cc_parent[idx] = INVALID
 
+    Filter = filter
+
     def export_to_stl(self) -> Tracks:
         """Return a dict {track_id: {image_id: feature_id}}."""
+        if self._pending_matches and not self._nodes:
+            self.build_from_inserted()
+
         INVALID = sys.maxsize
         tracks: Tracks = {}
         cc_parent = self.uf_tree_.m_cc_parent
@@ -117,11 +153,15 @@ class TracksBuilder:
             tracks.setdefault(track_id, {})[img_id] = feat_id
         return tracks
 
+    ExportToSTL = export_to_stl
+
     def nb_tracks(self) -> int:
         INVALID = sys.maxsize
         parents = set(self.uf_tree_.m_cc_parent)
         parents.discard(INVALID)
         return len(parents)
+
+    NbTracks = nb_tracks
 
 
 def length(tracks: Tracks) -> Tuple[int, int, int]:

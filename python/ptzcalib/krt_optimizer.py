@@ -251,6 +251,8 @@ class KRTOptimizer:
         self.cam_curr_world.set_dist(dist.copy())
         self.cam_curr_world.set_R(R.copy())
         self.cam_curr_world.set_t(t.copy())
+
+    SetInitParams = set_init_params
     
     def add_2d2d_constraints(self, cam_ref: Camera, kpts_ref: List, kpts_curr: List, matches: List):
         """Add 2D-2D constraints from keypoint matches."""
@@ -279,6 +281,8 @@ class KRTOptimizer:
             uv1 = np.array([kpts_ref[match.queryIdx].pt[0], kpts_ref[match.queryIdx].pt[1]])
             uv2 = np.array([kpts_curr[match.trainIdx].pt[0], kpts_curr[match.trainIdx].pt[1]])
             self.constraints_2d2d.append((cam_ref_local, uv1, uv2))
+
+    Add2d2dConstraints = add_2d2d_constraints
     
     def add_2d3d_constraints(self, pts2d: List[np.ndarray], pts3d: List[np.ndarray]):
         """Add 2D-3D constraints."""
@@ -291,6 +295,8 @@ class KRTOptimizer:
             pt3d_local = self.R_local_world @ pt3d_world + self.t_local_world
             pt3d_local_vec = np.array([pt3d_local[0, 0], pt3d_local[1, 0], pt3d_local[2, 0]])
             self.constraints_2d3d.append((pts2d[i], pt3d_local_vec))
+
+    Add2d3dConstraints = add_2d3d_constraints
     
     def _build_residual_function(self):
         """Build residual function for all constraints."""
@@ -325,11 +331,8 @@ class KRTOptimizer:
         
         return residual_fn
     
-    def _get_bounds(self):
-        """Get parameter bounds matching C++ SubsetParameterization."""
-        lower = np.full(15, -np.inf)
-        upper = np.full(15, np.inf)
-        
+    def _get_fixed_indices(self) -> List[int]:
+        """Parameter indices fixed by C++ SubsetParameterization."""
         # Fixed parameters based on factor type
         if self.factor_type == FactorType.F:
             # Fix: fy, cx, cy, t[0:2], dist[0:4]
@@ -345,32 +348,40 @@ class KRTOptimizer:
             fixed_indices = [2, 3, 7, 8, 9, 11, 12, 13, 14]
         else:
             fixed_indices = []
-        
-        for idx in fixed_indices:
-            lower[idx] = self.cam_curr_local_param[idx]
-            upper[idx] = self.cam_curr_local_param[idx]
-        
-        return lower, upper
+
+        return fixed_indices
     
     def solve(self) -> Tuple[bool, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Solve the optimization problem."""
         residual_fn = self._build_residual_function()
-        lower, upper = self._get_bounds()
+        fixed_indices = set(self._get_fixed_indices())
+        free_indices = [i for i in range(15) if i not in fixed_indices]
+        base_param = self.cam_curr_local_param.copy()
+
+        def pack_residual(free_values):
+            x = base_param.copy()
+            x[free_indices] = free_values
+            return residual_fn(x)
         
         try:
+            if not free_indices:
+                return False, None, None, None, None
+
+            initial_residuals = residual_fn(self.cam_curr_local.to_vector())
             result = least_squares(
-                residual_fn,
-                self.cam_curr_local_param,
-                bounds=(lower, upper),
+                pack_residual,
+                base_param[free_indices],
                 method='trf',
                 max_nfev=self.max_iter * 100,
                 verbose=0
             )
             
-            self.cam_curr_local_param = result.x
+            refined = base_param.copy()
+            refined[free_indices] = result.x
+            self.cam_curr_local_param = refined
             self.num_iter = result.nfev
             
-            initial_cost = np.sum(residual_fn(self.cam_curr_local.to_vector()) ** 2)
+            initial_cost = np.sum(initial_residuals ** 2)
             final_cost = result.cost * 2  # least_squares returns 0.5 * sum(residuals^2)
             num_residuals = len(result.fun)
             
@@ -383,9 +394,13 @@ class KRTOptimizer:
         except Exception as e:
             logger.warning(f"KRT optimization failed: {e}")
             return False, None, None, None, None
+
+    Solve = solve
     
     def _check_results(self, initial_cost: float, final_cost: float, num_residuals: int, success: bool) -> bool:
         """Check optimization results."""
+        if num_residuals <= 0:
+            return False
         init_reproj_error = math.sqrt(2) * math.sqrt((2 * initial_cost) / num_residuals)
         final_reproj_error = math.sqrt(2) * math.sqrt((2 * final_cost) / num_residuals)
         
@@ -469,6 +484,8 @@ class KRTOptimizer:
         reproj_error = math.sqrt(residuals_sum / num_observation)
         
         return reproj_error
+
+    Cal2d2dReprojError = cal_2d2d_reproj_error
     
     def cal_2d3d_reproj_error(self, pts2d: List[np.ndarray], pts3d: List[np.ndarray]) -> float:
         """Calculate 2D-3D reprojection error."""
@@ -498,3 +515,10 @@ class KRTOptimizer:
         reproj_error = math.sqrt(residuals_sum / num_observation)
         
         return reproj_error
+
+    Cal2d3dReprojError = cal_2d3d_reproj_error
+
+    def set_fixed_focal_flag(self):
+        self.set_fixed_focal = True
+
+    SetFixedFocal = set_fixed_focal_flag

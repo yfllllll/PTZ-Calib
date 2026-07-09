@@ -119,14 +119,26 @@ class Camera:
     def K(self) -> np.ndarray:
         return self.K_
 
+    def set_K(self, K: np.ndarray) -> None:
+        self.K_ = np.asarray(K, dtype=np.float64).reshape(3, 3).copy()
+
     def R(self) -> np.ndarray:
         return self.R_
+
+    def set_R(self, R: np.ndarray) -> None:
+        self.R_ = np.asarray(R, dtype=np.float64).reshape(3, 3).copy()
 
     def t(self) -> np.ndarray:
         return self.t_
 
+    def set_t(self, t: np.ndarray) -> None:
+        self.t_ = np.asarray(t, dtype=np.float64).reshape(3, 1).copy()
+
     def dist(self) -> np.ndarray:
         return self.dist_
+
+    def set_dist(self, dist: np.ndarray) -> None:
+        self.dist_ = np.asarray(dist, dtype=np.float64).reshape(5, 1).copy()
 
     def rvec(self) -> np.ndarray:
         """Rotation vector (Rodrigues) as (3,1) array."""

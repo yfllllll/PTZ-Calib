@@ -18,6 +18,7 @@ setup(
         "numpy>=1.20.0",
         "scipy>=1.7.0",
         "opencv-python>=4.5.0",
+        "pyceres>=2.6",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

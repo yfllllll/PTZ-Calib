@@ -4,6 +4,8 @@ Python port of src/core/ptzray_optimizer.{h,cc}.
 """
 
 from enum import Enum
+import logging
+import math
 from typing import Dict, List, Set, Tuple, Optional
 import numpy as np
 import cv2
@@ -11,6 +13,8 @@ import pyceres
 
 from .types import Camera, ImageFeatures, MatchesInfo, Ray
 from .tracks import TracksBuilder, Track, Tracks
+
+logger = logging.getLogger(__name__)
 
 
 class FactorType(Enum):
@@ -58,38 +62,63 @@ def _apply_dist(x, y, k1, k2, k3, p1, p2):
     return xd, yd
 
 
+def _fill_numeric_jacobians(eval_residuals, parameters, jacobians, eps=1e-6):
+    """Fill pyceres jacobians using central differences, like C++ NumericDiff."""
+    if jacobians is None:
+        return
+    base_params = [np.asarray(p, dtype=np.float64) for p in parameters]
+    for block_id, jac in enumerate(jacobians):
+        if jac is None:
+            continue
+        block = base_params[block_id]
+        num_params = block.size
+        num_residuals = len(eval_residuals(base_params))
+        for col in range(num_params):
+            plus = [p.copy() for p in base_params]
+            minus = [p.copy() for p in base_params]
+            plus[block_id].reshape(-1)[col] += eps
+            minus[block_id].reshape(-1)[col] -= eps
+            r_plus = eval_residuals(plus)
+            r_minus = eval_residuals(minus)
+            deriv = (r_plus - r_minus) / (2.0 * eps)
+            for row in range(num_residuals):
+                jac[row * num_params + col] = deriv[row]
+
+
+def _as_uv(uv):
+    return np.asarray(uv, dtype=np.float64).reshape(2)
+
+
 # ---------------- Cost functions ----------------
 
 class PTZRayFactor(pyceres.CostFunction):
     """f, R, ray. x = KRX, no distortion. shared fx=fy."""
 
-    def __init__(self, uv):
+    def __init__(self, uv, weight: float = 1.0):
         super().__init__()
         self.set_num_residuals(2)
         self.set_parameter_block_sizes([9, 6, 3])
         self.uv = np.asarray(uv, dtype=np.float64).reshape(2)
+        self.weight = math.sqrt(float(weight))
 
     def Evaluate(self, parameters, residuals, jacobians):
-        intr = parameters[0]
-        extr = parameters[1]
-        ray = parameters[2]
+        def compute(params):
+            intr, extr, ray = params[0], params[1], params[2]
+            param = _build_camera_from_intr_extr(intr, extr, share_fx=True)
+            R = _rodrigues_rvec_to_R(param[4:7])
+            K = np.array([[param[0], 0, param[2]],
+                          [0, param[1], param[3]],
+                          [0, 0, 1.0]], dtype=np.float64)
+            cv_ray = np.asarray(ray, dtype=np.float64).reshape(3, 1)
+            cv_ray /= np.linalg.norm(cv_ray)
+            uv_predict = K @ R @ cv_ray
+            uv_predict /= uv_predict[2, 0]
+            return self.weight * np.array([self.uv[0] - uv_predict[0, 0],
+                                           self.uv[1] - uv_predict[1, 0]], dtype=np.float64)
 
-        param = _build_camera_from_intr_extr(intr, extr, share_fx=True)
-        R = _rodrigues_rvec_to_R(param[4:7])
-        K = np.array([[param[0], 0, param[2]],
-                      [0, param[1], param[3]],
-                      [0, 0, 1.0]], dtype=np.float64)
-
-        cv_ray = np.asarray(ray, dtype=np.float64).reshape(3, 1)
-        n = np.linalg.norm(cv_ray)
-        if n > 0:
-            cv_ray = cv_ray / n
-
-        uv_predict = K @ R @ cv_ray
-        uv_predict = uv_predict / uv_predict[2, 0]
-
-        residuals[0] = self.uv[0] - uv_predict[0, 0]
-        residuals[1] = self.uv[1] - uv_predict[1, 0]
+        res = compute(parameters)
+        residuals[0], residuals[1] = res[0], res[1]
+        _fill_numeric_jacobians(compute, parameters, jacobians)
         return True
 
 
@@ -97,38 +126,33 @@ class PTZRayFactor(pyceres.CostFunction):
 class PTZRayDistFactor(pyceres.CostFunction):
     """f, R, k1, k2, k3, p1, p2, ray. shared fx=fy. Includes penalty if pt3d behind camera."""
 
-    def __init__(self, uv):
+    def __init__(self, uv, weight: float = 1.0):
         super().__init__()
         self.set_num_residuals(2)
         self.set_parameter_block_sizes([9, 6, 3])
         self.uv = np.asarray(uv, dtype=np.float64).reshape(2)
+        self.weight = math.sqrt(float(weight))
 
     def Evaluate(self, parameters, residuals, jacobians):
-        intr = parameters[0]
-        extr = parameters[1]
-        ray = parameters[2]
-        param = _build_camera_from_intr_extr(intr, extr, share_fx=True)
-        R = _rodrigues_rvec_to_R(param[4:7])
+        def compute(params):
+            intr, extr, ray = params[0], params[1], params[2]
+            param = _build_camera_from_intr_extr(intr, extr, share_fx=True)
+            R = _rodrigues_rvec_to_R(param[4:7])
+            cv_ray = np.asarray(ray, dtype=np.float64).reshape(3, 1)
+            pt3d = R @ cv_ray
+            if pt3d[2, 0] < 0:
+                return self.weight * np.array([1000000.0, 1000000.0], dtype=np.float64)
+            pt3d /= pt3d[2, 0]
+            x, y = pt3d[0, 0], pt3d[1, 0]
+            fx, fy, cx, cy = param[0], param[1], param[2], param[3]
+            k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
+            xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
+            return self.weight * np.array([self.uv[0] - (fx * xd + cx),
+                                           self.uv[1] - (fy * yd + cy)], dtype=np.float64)
 
-        cv_ray = np.asarray(ray, dtype=np.float64).reshape(3, 1)
-        # Note: C++ code has ray/=norm commented out here
-        pt3d = R @ cv_ray
-
-        # penalty if behind camera
-        if pt3d[2, 0] < 0:
-            residuals[0] = 1000000.0
-            residuals[1] = 1000000.0
-            return True
-
-        pt3d = pt3d / pt3d[2, 0]
-        x, y = pt3d[0, 0], pt3d[1, 0]
-        fx, fy, cx, cy = param[0], param[1], param[2], param[3]
-        k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
-        xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
-        x_proj = fx * xd + cx
-        y_proj = fy * yd + cy
-        residuals[0] = self.uv[0] - x_proj
-        residuals[1] = self.uv[1] - y_proj
+        res = compute(parameters)
+        residuals[0], residuals[1] = res[0], res[1]
+        _fill_numeric_jacobians(compute, parameters, jacobians)
         return True
 
 
@@ -136,54 +160,66 @@ class PTZRayDistFactor(pyceres.CostFunction):
 class PTZRayFxfyDistFactor(pyceres.CostFunction):
     """fx, fy, R, k1, k2, k3, p1, p2, ray. fx != fy."""
 
-    def __init__(self, uv):
+    def __init__(self, uv, weight: float = 1.0):
         super().__init__()
         self.set_num_residuals(2)
         self.set_parameter_block_sizes([9, 6, 3])
         self.uv = np.asarray(uv, dtype=np.float64).reshape(2)
+        self.weight = math.sqrt(float(weight))
 
     def Evaluate(self, parameters, residuals, jacobians):
-        intr, extr, ray = parameters[0], parameters[1], parameters[2]
-        param = _build_camera_from_intr_extr(intr, extr, share_fx=False)
-        R = _rodrigues_rvec_to_R(param[4:7])
-        cv_ray = np.asarray(ray, dtype=np.float64).reshape(3, 1)
-        cv_ray = cv_ray / np.linalg.norm(cv_ray)
-        pt3d = R @ cv_ray
-        pt3d = pt3d / pt3d[2, 0]
-        x, y = pt3d[0, 0], pt3d[1, 0]
-        fx, fy, cx, cy = param[0], param[1], param[2], param[3]
-        k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
-        xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
-        residuals[0] = self.uv[0] - (fx * xd + cx)
-        residuals[1] = self.uv[1] - (fy * yd + cy)
+        def compute(params):
+            intr, extr, ray = params[0], params[1], params[2]
+            param = _build_camera_from_intr_extr(intr, extr, share_fx=False)
+            R = _rodrigues_rvec_to_R(param[4:7])
+            cv_ray = np.asarray(ray, dtype=np.float64).reshape(3, 1)
+            cv_ray /= np.linalg.norm(cv_ray)
+            pt3d = R @ cv_ray
+            pt3d /= pt3d[2, 0]
+            x, y = pt3d[0, 0], pt3d[1, 0]
+            fx, fy, cx, cy = param[0], param[1], param[2], param[3]
+            k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
+            xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
+            return self.weight * np.array([self.uv[0] - (fx * xd + cx),
+                                           self.uv[1] - (fy * yd + cy)], dtype=np.float64)
+
+        res = compute(parameters)
+        residuals[0], residuals[1] = res[0], res[1]
+        _fill_numeric_jacobians(compute, parameters, jacobians)
         return True
 
 
 class PTZRayDistDispFactor(pyceres.CostFunction):
     """f, R, d1, d2, d3, k1, k2, k3, p1, p2, ray. Displacement model."""
 
-    def __init__(self, uv):
+    def __init__(self, uv, weight: float = 1.0):
         super().__init__()
         self.set_num_residuals(2)
         self.set_parameter_block_sizes([9, 3, 6, 3])
         self.uv = np.asarray(uv, dtype=np.float64).reshape(2)
+        self.weight = math.sqrt(float(weight))
 
     def Evaluate(self, parameters, residuals, jacobians):
-        intr, disp, extr, ray = parameters[0], parameters[1], parameters[2], parameters[3]
-        param = _build_camera_from_intr_extr(intr, extr, share_fx=True)
-        R = _rodrigues_rvec_to_R(param[4:7])
-        cv_ray = np.asarray(ray, dtype=np.float64).reshape(3, 1)
-        cv_ray = cv_ray / np.linalg.norm(cv_ray)
-        pt3d = R @ cv_ray
-        displacement = disp[0] + disp[1] * param[0] + disp[2] * param[0] * param[0]
-        pt3d[2, 0] += displacement
-        pt3d = pt3d / pt3d[2, 0]
-        x, y = pt3d[0, 0], pt3d[1, 0]
-        fx, fy, cx, cy = param[0], param[1], param[2], param[3]
-        k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
-        xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
-        residuals[0] = self.uv[0] - (fx * xd + cx)
-        residuals[1] = self.uv[1] - (fy * yd + cy)
+        def compute(params):
+            intr, disp, extr, ray = params[0], params[1], params[2], params[3]
+            param = _build_camera_from_intr_extr(intr, extr, share_fx=True)
+            R = _rodrigues_rvec_to_R(param[4:7])
+            cv_ray = np.asarray(ray, dtype=np.float64).reshape(3, 1)
+            cv_ray /= np.linalg.norm(cv_ray)
+            pt3d = R @ cv_ray
+            displacement = disp[0] + disp[1] * param[0] + disp[2] * param[0] * param[0]
+            pt3d[2, 0] += displacement
+            pt3d /= pt3d[2, 0]
+            x, y = pt3d[0, 0], pt3d[1, 0]
+            fx, fy, cx, cy = param[0], param[1], param[2], param[3]
+            k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
+            xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
+            return self.weight * np.array([self.uv[0] - (fx * xd + cx),
+                                           self.uv[1] - (fy * yd + cy)], dtype=np.float64)
+
+        res = compute(parameters)
+        residuals[0], residuals[1] = res[0], res[1]
+        _fill_numeric_jacobians(compute, parameters, jacobians)
         return True
 
 
@@ -198,21 +234,26 @@ class Reproj2d3dFactor(pyceres.CostFunction):
         self.pt3d = np.asarray(pt3d, dtype=np.float64).reshape(3)
 
     def Evaluate(self, parameters, residuals, jacobians):
-        intr, extr, tlw = parameters[0], parameters[1], parameters[2]
-        param = _build_camera_from_intr_extr(intr, extr, share_fx=False)
-        R = _rodrigues_rvec_to_R(param[4:7])
-        R_l_w = _rodrigues_rvec_to_R(tlw[:3])
-        t_l_w = np.asarray(tlw[3:6], dtype=np.float64).reshape(3, 1)
-        pt3d_w = self.pt3d.reshape(3, 1)
-        pt3d_l = R_l_w @ pt3d_w + t_l_w
-        pt_cam = R @ pt3d_l
-        pt_cam = pt_cam / pt_cam[2, 0]
-        x, y = pt_cam[0, 0], pt_cam[1, 0]
-        fx, fy, cx, cy = param[0], param[1], param[2], param[3]
-        k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
-        xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
-        residuals[0] = self.uv[0] - (fx * xd + cx)
-        residuals[1] = self.uv[1] - (fy * yd + cy)
+        def compute(params):
+            intr, extr, tlw = params[0], params[1], params[2]
+            param = _build_camera_from_intr_extr(intr, extr, share_fx=False)
+            R = _rodrigues_rvec_to_R(param[4:7])
+            R_l_w = _rodrigues_rvec_to_R(tlw[:3])
+            t_l_w = np.asarray(tlw[3:6], dtype=np.float64).reshape(3, 1)
+            pt3d_w = self.pt3d.reshape(3, 1)
+            pt3d_l = R_l_w @ pt3d_w + t_l_w
+            pt_cam = R @ pt3d_l
+            pt_cam /= pt_cam[2, 0]
+            x, y = pt_cam[0, 0], pt_cam[1, 0]
+            fx, fy, cx, cy = param[0], param[1], param[2], param[3]
+            k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
+            xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
+            return np.array([self.uv[0] - (fx * xd + cx),
+                             self.uv[1] - (fy * yd + cy)], dtype=np.float64)
+
+        res = compute(parameters)
+        residuals[0], residuals[1] = res[0], res[1]
+        _fill_numeric_jacobians(compute, parameters, jacobians)
         return True
 
 
@@ -227,23 +268,28 @@ class Reproj2d3dDispFactor(pyceres.CostFunction):
         self.pt3d = np.asarray(pt3d, dtype=np.float64).reshape(3)
 
     def Evaluate(self, parameters, residuals, jacobians):
-        intr, disp, extr, tlw = parameters[0], parameters[1], parameters[2], parameters[3]
-        param = _build_camera_from_intr_extr(intr, extr, share_fx=False)
-        R = _rodrigues_rvec_to_R(param[4:7])
-        R_l_w = _rodrigues_rvec_to_R(tlw[:3])
-        t_l_w = np.asarray(tlw[3:6], dtype=np.float64).reshape(3, 1)
-        pt3d_w = self.pt3d.reshape(3, 1)
-        pt3d_l = R_l_w @ pt3d_w + t_l_w
-        pt_cam = R @ pt3d_l
-        displacement = disp[0] + disp[1] * param[0] + disp[2] * param[0] * param[0]
-        pt_cam[2, 0] += displacement
-        pt_cam = pt_cam / pt_cam[2, 0]
-        x, y = pt_cam[0, 0], pt_cam[1, 0]
-        fx, fy, cx, cy = param[0], param[1], param[2], param[3]
-        k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
-        xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
-        residuals[0] = self.uv[0] - (fx * xd + cx)
-        residuals[1] = self.uv[1] - (fy * yd + cy)
+        def compute(params):
+            intr, disp, extr, tlw = params[0], params[1], params[2], params[3]
+            param = _build_camera_from_intr_extr(intr, extr, share_fx=False)
+            R = _rodrigues_rvec_to_R(param[4:7])
+            R_l_w = _rodrigues_rvec_to_R(tlw[:3])
+            t_l_w = np.asarray(tlw[3:6], dtype=np.float64).reshape(3, 1)
+            pt3d_w = self.pt3d.reshape(3, 1)
+            pt3d_l = R_l_w @ pt3d_w + t_l_w
+            pt_cam = R @ pt3d_l
+            displacement = disp[0] + disp[1] * param[0] + disp[2] * param[0] * param[0]
+            pt_cam[2, 0] += displacement
+            pt_cam /= pt_cam[2, 0]
+            x, y = pt_cam[0, 0], pt_cam[1, 0]
+            fx, fy, cx, cy = param[0], param[1], param[2], param[3]
+            k1, k2, k3, p1, p2 = param[10], param[11], param[12], param[13], param[14]
+            xd, yd = _apply_dist(x, y, k1, k2, k3, p1, p2)
+            return np.array([self.uv[0] - (fx * xd + cx),
+                             self.uv[1] - (fy * yd + cy)], dtype=np.float64)
+
+        res = compute(parameters)
+        residuals[0], residuals[1] = res[0], res[1]
+        _fill_numeric_jacobians(compute, parameters, jacobians)
         return True
 
 
@@ -251,66 +297,179 @@ class Reproj2d3dDispFactor(pyceres.CostFunction):
 class PTZRayOptimizer:
     """PTZ-Ray bundle adjustment optimizer."""
     
-    def __init__(self, features, matches_info, cameras, cam_ids, max_iter, factor_type,
-                 pixels=None, pts3d=None):
+    def __init__(self, features, matches_info, cameras, *args):
         self.features_ = features
         self.matches_info_ = matches_info
         self.cameras_ = [cam.clone() for cam in cameras]
         self.num_cams_ = len(cameras)
-        self.cam_ids_ = set(cam_ids)
+
+        if len(args) == 3:
+            pixels, pts3d = [], []
+            cam_ids, max_iter, factor_type = args
+        elif len(args) == 5:
+            pixels, pts3d, cam_ids, max_iter, factor_type = args
+        else:
+            raise TypeError(
+                "PTZRayOptimizer expects either (cam_ids, max_iter, factor_type) "
+                "or (pixels, pts3d, cam_ids, max_iter, factor_type)"
+            )
+
+        self.cam_ids_ = set(cam_ids) if cam_ids else set(range(self.num_cams_))
         self.max_iter_ = max_iter
         self.type_ = factor_type
         self.pixels_ = pixels if pixels else []
         self.pts3d_ = pts3d if pts3d else []
         
-        self.shared_ic_ids_ = list(range(len(cameras)))
-        self.intrinsics_param_ = {}
-        self.extrinsics_param_ = {}
-        self.rays_param_ = {}
-        self.disp_param_ = [0.0, 0.0, 0.0]
-        self.tlw_param_ = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self.tracks_ = {}
-        
-        self._find_tracks()
-        self._set_up_initial_camera_params()
-        self._set_init_trans_local_to_world()
+        self.shared_ic_ids_ = list(range(self.num_cams_))
+        self.intrinsics_param_: Dict[int, np.ndarray] = {}
+        self.extrinsics_param_: Dict[int, np.ndarray] = {}
+        self.rays_param_: Dict[int, np.ndarray] = {}
+        self.disp_param_ = np.zeros(3, dtype=np.float64)
+        self.tlw_param_ = np.zeros(6, dtype=np.float64)
+        self.tracks_: Tracks = {}
+        self.track_len_ = 0
+        self.max_track_len_ = 0
+        self.min_track_len_ = 0
+        self.summary_ = None
+        self.final_reproj_error_all_ = 0.0
+        self.final_reproj_error_2d2d_ = 0.0
+        self.final_reproj_error_2d3d_ = 0.0
     
     def _is_candidate(self, image_id):
         return image_id in self.cam_ids_
+
+    isCandidate = _is_candidate
+
+    def set_shared_intrinsics(self, shared_ic_ids: List[int]) -> None:
+        if len(shared_ic_ids) != self.num_cams_:
+            logger.warning("Set shared intrinsics failed, length not matched")
+            return
+        self.shared_ic_ids_ = list(shared_ic_ids)
+
+    SetSharedIntrinsics = set_shared_intrinsics
+
+    def _check_valid(self) -> bool:
+        if not self.features_ or len(self.features_) != self.num_cams_:
+            return False
+        if self.max_iter_ <= 0:
+            return False
+        if self.pixels_:
+            if len(self.pixels_) != self.num_cams_ or len(self.pts3d_) != self.num_cams_:
+                return False
+            for i in range(self.num_cams_):
+                if len(self.pixels_[i]) != len(self.pts3d_[i]):
+                    return False
+        return True
     
     def _find_tracks(self):
         builder = TracksBuilder()
-        for m in self.matches_info_:
-            if m.src_img_idx >= len(self.features_) or m.dst_img_idx >= len(self.features_):
+        builder.build(self.matches_info_)
+        builder.filter(4)
+        self.tracks_ = builder.export_to_stl()
+        lengths = [len(t) for t in self.tracks_.values()]
+        self.track_len_ = int(sum(lengths))
+        self.max_track_len_ = int(max(lengths)) if lengths else 0
+        self.min_track_len_ = int(min(lengths)) if lengths else 0
+
+    FindTracks = _find_tracks
+
+    @staticmethod
+    def T_l_w(tlw):
+        R_l_w = _rodrigues_rvec_to_R(np.asarray(tlw[:3], dtype=np.float64))
+        t_l_w = np.asarray(tlw[3:6], dtype=np.float64).reshape(3, 1)
+        return R_l_w, t_l_w
+
+    def _set_init_trans_local_to_world(self) -> bool:
+        for i in range(self.num_cams_):
+            if not self._is_candidate(i):
                 continue
-            src_feat = self.features_[m.src_img_idx]
-            dst_feat = self.features_[m.dst_img_idx]
-            for dm in m.matches:
-                if dm.queryIdx < len(src_feat.keypoints) and dm.trainIdx < len(dst_feat.keypoints):
-                    if m.inliers_mask and len(m.inliers_mask) > len(builder._nodes):
-                        if m.inliers_mask[dm.queryIdx]:
-                            builder.insert(m.src_img_idx, dm.queryIdx, m.dst_img_idx, dm.trainIdx)
-                    else:
-                        builder.insert(m.src_img_idx, dm.queryIdx, m.dst_img_idx, dm.trainIdx)
-        builder.filter(2)
-        self.tracks_ = builder.export_to_STL()
+            if not self.pixels_ or i >= len(self.pixels_) or len(self.pixels_[i]) == 0:
+                continue
+
+            pts3d = np.asarray(self.pts3d_[i], dtype=np.float64).reshape(-1, 3)
+            pixels = np.asarray(self.pixels_[i], dtype=np.float64).reshape(-1, 2)
+            if len(pts3d) < 4:
+                continue
+
+            ok, rvec, tvec = cv2.solvePnP(
+                pts3d,
+                pixels,
+                self.cameras_[i].K(),
+                self.cameras_[i].dist(),
+                flags=cv2.SOLVEPNP_EPNP,
+            )
+            if not ok:
+                continue
+
+            R, _ = cv2.Rodrigues(rvec)
+            p3d = pts3d[0].reshape(3, 1)
+            p3d_cam = R @ p3d + tvec.reshape(3, 1)
+            if p3d_cam[2, 0] < 0 or np.linalg.det(R) < 0.0:
+                continue
+
+            predict_pixels, _ = cv2.projectPoints(
+                pts3d.astype(np.float32),
+                rvec,
+                tvec,
+                self.cameras_[i].K(),
+                None,
+            )
+            diff = predict_pixels.reshape(-1, 2) - pixels
+            reproj_error = math.sqrt(float(np.sum(diff * diff)) / len(pixels))
+            if reproj_error > 300:
+                continue
+
+            T_i_w = np.eye(4, dtype=np.float64)
+            T_i_w[:3, :3] = R
+            T_i_w[:3, 3:4] = tvec.reshape(3, 1)
+            T_i_l = np.eye(4, dtype=np.float64)
+            T_i_l[:3, :3] = self.cameras_[i].R()
+            T_i_l[:3, 3:4] = self.cameras_[i].t()
+            T_l_w = np.linalg.inv(T_i_l) @ T_i_w
+            rvec_l_w, _ = cv2.Rodrigues(T_l_w[:3, :3])
+            self.tlw_param_ = np.array(
+                [
+                    rvec_l_w[0, 0],
+                    rvec_l_w[1, 0],
+                    rvec_l_w[2, 0],
+                    T_l_w[0, 3],
+                    T_l_w[1, 3],
+                    T_l_w[2, 3],
+                ],
+                dtype=np.float64,
+            )
+            return True
+
+        self.tlw_param_ = np.zeros(6, dtype=np.float64)
+        return False
+
+    SetInitTransLocalToWorld = _set_init_trans_local_to_world
     
     def _set_up_initial_camera_params(self):
+        self.intrinsics_param_.clear()
+        self.extrinsics_param_.clear()
         for i in range(self.num_cams_):
+            if not self._is_candidate(i):
+                continue
             ic_id = self.shared_ic_ids_[i]
             cam = self.cameras_[i]
             if ic_id not in self.intrinsics_param_:
+                param = cam.to_vector()
                 self.intrinsics_param_[ic_id] = np.array([
-                    cam.K_[0,0], cam.K_[1,1], cam.K_[0,2], cam.K_[1,2],
-                    cam.dist_[0,0], cam.dist_[1,0], cam.dist_[2,0], cam.dist_[3,0], cam.dist_[4,0]
+                    param[0], param[1], param[2], param[3],
+                    param[10], param[11], param[12], param[13], param[14],
                 ], dtype=np.float64)
-            rvec, _ = cv2.Rodrigues(cam.R_)
-            self.extrinsics_param_[i] = np.array([rvec[0,0], rvec[1,0], rvec[2,0], 0, 0, 0], dtype=np.float64)
+            param = cam.to_vector()
+            self.extrinsics_param_[i] = param[4:10].copy()
         
+        self.disp_param_ = np.zeros(3, dtype=np.float64)
+        self.rays_param_.clear()
         for track_id, track in self.tracks_.items():
             ray = self._pix2ray(track)
-            if ray is not None and ray.shape[0] == 3:
+            if ray is not None:
                 self.rays_param_[track_id] = ray.reshape(-1).copy()
+
+    SetUpInitialCameraParams = _set_up_initial_camera_params
     
     def _pix2ray(self, track):
         ray_sum = np.zeros((3, 1), dtype=np.float64)
@@ -327,16 +486,22 @@ class PTZRayOptimizer:
             ray_temp = ray_temp / np.linalg.norm(ray_temp)
             ray_sum += ray_temp
             count += 1
-        if count > 0:
-            ray_sum = ray_sum / count
-            ray_sum = ray_sum / np.linalg.norm(ray_sum)
-            return ray_sum
-        return None
-    
-    def _set_init_trans_local_to_world(self):
-        self.tlw_param_ = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        if count == 0:
+            return None
+        ray_sum /= count
+        ray_sum /= np.linalg.norm(ray_sum)
+        return ray_sum
+
+    Pix2Ray = _pix2ray
     
     def solve(self, cameras_out, rays_out=None):
+        if not self._check_valid():
+            return False
+
+        self._find_tracks()
+        self._set_init_trans_local_to_world()
+        self._set_up_initial_camera_params()
+
         problem = pyceres.Problem()
         self._add_constraints_2d2d(problem)
         if self.pixels_ and any(len(p) > 0 for p in self.pixels_):
@@ -348,12 +513,19 @@ class PTZRayOptimizer:
         options = pyceres.SolverOptions()
         options.max_num_iterations = self.max_iter_
         options.linear_solver_type = pyceres.LinearSolverType.SPARSE_SCHUR
-        options.minimizer_progress_to_stdout = False
-        summary = pyceres.Summary()
-        pyceres.Solve(options, problem, summary)
-        
-        self._obtain_refined_camera_params(cameras_out, rays_out)
-        return True
+        options.minimizer_progress_to_stdout = True
+        summary = pyceres.SolverSummary()
+        pyceres.solve(options, problem, summary)
+        self.summary_ = summary
+
+        self._cal_reproj_error()
+
+        if summary.termination_type == pyceres.TerminationType.CONVERGENCE:
+            self._obtain_refined_camera_params(cameras_out, rays_out)
+            return True
+        return False
+
+    Solve = solve
     
     def _set_parameter_manifolds(self, problem):
         """Set SubsetManifold for parameters (matches C++ SubsetParameterization)."""
@@ -362,17 +534,16 @@ class PTZRayOptimizer:
             if self.type_ == FactorType.PTZRay:
                 # Fix cx, cy, k1, k2, k3, p1, p2 (indices 2,3,4,5,6,7,8)
                 manifold = pyceres.SubsetManifold(9, [2, 3, 4, 5, 6, 7, 8])
-                problem.SetManifold(self.intrinsics_param_[ic_id], manifold)
-            elif self.type_ == FactorType.PTZRayDistDisp:
+                problem.set_manifold(self.intrinsics_param_[ic_id], manifold)
+            elif self.type_ in (FactorType.PTZRayDist, FactorType.PTZRayFxfyDist, FactorType.PTZRayDistDisp):
                 # Fix cx, cy, k2, k3, p1, p2 (indices 2,3,5,6,7,8)
                 manifold = pyceres.SubsetManifold(9, [2, 3, 5, 6, 7, 8])
-                problem.SetManifold(self.intrinsics_param_[ic_id], manifold)
-            # PTZRayDist and PTZRayFxfyDist don't fix intrinsics
+                problem.set_manifold(self.intrinsics_param_[ic_id], manifold)
         
         # Extrinsics: fix translation t (indices 3,4,5)
         for i in self.extrinsics_param_.keys():
             manifold = pyceres.SubsetManifold(6, [3, 4, 5])
-            problem.SetManifold(self.extrinsics_param_[i], manifold)
+            problem.set_manifold(self.extrinsics_param_[i], manifold)
 
     
     def _add_constraints_2d2d(self, problem):
@@ -386,23 +557,34 @@ class PTZRayOptimizer:
                     continue
                 uv = self.features_[img_id].keypoints[feat_id].pt
                 ic_id = self.shared_ic_ids_[img_id]
+                weight = float(len(track))
                 
                 if self.type_ == FactorType.PTZRay:
-                    cost = PTZRayFactor(uv)
-                    problem.AddResidualBlock(cost, None, 
-                        self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id])
+                    cost = PTZRayFactor(uv, weight)
+                    problem.add_residual_block(
+                        cost, None,
+                        [self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id]],
+                    )
                 elif self.type_ == FactorType.PTZRayDist:
-                    cost = PTZRayDistFactor(uv)
-                    problem.AddResidualBlock(cost, None,
-                        self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id])
+                    cost = PTZRayDistFactor(uv, weight)
+                    problem.add_residual_block(
+                        cost, None,
+                        [self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id]],
+                    )
                 elif self.type_ == FactorType.PTZRayFxfyDist:
-                    cost = PTZRayFxfyDistFactor(uv)
-                    problem.AddResidualBlock(cost, None,
-                        self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id])
+                    cost = PTZRayFxfyDistFactor(uv, weight)
+                    problem.add_residual_block(
+                        cost, None,
+                        [self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id]],
+                    )
                 elif self.type_ == FactorType.PTZRayDistDisp:
-                    cost = PTZRayDistDispFactor(uv)
-                    problem.AddResidualBlock(cost, None,
-                        self.intrinsics_param_[ic_id], self.disp_param_, self.extrinsics_param_[img_id], self.rays_param_[track_id])
+                    cost = PTZRayDistDispFactor(uv, weight)
+                    problem.add_residual_block(
+                        cost, None,
+                        [self.intrinsics_param_[ic_id], self.disp_param_, self.extrinsics_param_[img_id], self.rays_param_[track_id]],
+                    )
+
+    AddConstraints2d2d = _add_constraints_2d2d
     
     def _add_constraints_2d3d(self, problem):
         for i in range(self.num_cams_):
@@ -414,28 +596,48 @@ class PTZRayOptimizer:
             for j in range(len(self.pixels_[i])):
                 if self.type_ == FactorType.PTZRayDistDisp:
                     cost = Reproj2d3dDispFactor(self.pixels_[i][j], self.pts3d_[i][j])
-                    problem.AddResidualBlock(cost, None,
-                        self.intrinsics_param_[ic_id], self.disp_param_, self.extrinsics_param_[i], self.tlw_param_)
+                    problem.add_residual_block(
+                        cost, None,
+                        [self.intrinsics_param_[ic_id], self.disp_param_, self.extrinsics_param_[i], self.tlw_param_],
+                    )
                 else:
                     cost = Reproj2d3dFactor(self.pixels_[i][j], self.pts3d_[i][j])
-                    problem.AddResidualBlock(cost, None,
-                        self.intrinsics_param_[ic_id], self.extrinsics_param_[i], self.tlw_param_)
+                    problem.add_residual_block(
+                        cost, None,
+                        [self.intrinsics_param_[ic_id], self.extrinsics_param_[i], self.tlw_param_],
+                    )
+
+    AddConstraints2d3d = _add_constraints_2d3d
     
     def _obtain_refined_camera_params(self, cameras_out, rays_out):
         for i in range(self.num_cams_):
+            if not self._is_candidate(i):
+                continue
             ic_id = self.shared_ic_ids_[i]
             intr = self.intrinsics_param_[ic_id]
             extr = self.extrinsics_param_[i]
-            cameras_out[i].K_ = np.array([[intr[0], 0, intr[2]], [0, intr[1], intr[3]], [0, 0, 1]], dtype=np.float64)
-            cameras_out[i].R_, _ = cv2.Rodrigues(extr[:3].reshape(3, 1))
-            cameras_out[i].t_ = extr[3:6].reshape(3, 1)
-            cameras_out[i].dist_ = intr[4:9].reshape(5, 1)
+            param = np.zeros(15, dtype=np.float64)
+            if self.type_ == FactorType.PTZRayFxfyDist:
+                param[0], param[1] = intr[0], intr[1]
+            else:
+                param[0], param[1] = intr[0], intr[0]
+            param[2:4] = intr[2:4]
+            param[4:9] = extr[:5]
+            displacement = self.disp_param_[0] + self.disp_param_[1] * param[0] + self.disp_param_[2] * param[0] * param[0]
+            param[9] = extr[5] + displacement
+            param[10:15] = intr[4:9]
+            cameras_out[i] = Camera.from_vector(param)
+
+        R_l_w, t_l_w = self.T_l_w(self.tlw_param_)
+        for i in range(self.num_cams_):
+            if not self._is_candidate(i):
+                continue
+            cameras_out[i].set_t(cameras_out[i].R() @ t_l_w + cameras_out[i].t())
+            cameras_out[i].set_R(cameras_out[i].R() @ R_l_w)
         
         if rays_out is not None:
             rays_out.clear()
             rays_out.extend([[] for _ in range(self.num_cams_)])
-            R_l_w, _ = cv2.Rodrigues(self.tlw_param_[:3].reshape(3, 1))
-            t_l_w = self.tlw_param_[3:6].reshape(3, 1)
             R_w_l = R_l_w.T
             t_w_l = -R_w_l @ t_l_w
             for track_id, track in self.tracks_.items():
@@ -444,8 +646,89 @@ class PTZRayOptimizer:
                 ray_l = self.rays_param_[track_id].reshape(3, 1)
                 ray_w = R_w_l @ ray_l + t_w_l
                 for img_id, feat_id in track.items():
+                    if not self._is_candidate(img_id):
+                        continue
                     if img_id >= len(self.features_) or feat_id >= len(self.features_[img_id].keypoints):
                         continue
                     uv = self.features_[img_id].keypoints[feat_id].pt
                     rays_out[img_id].append(Ray(track_id, ray_w, uv))
 
+    ObtainRefinedCameraParams = _obtain_refined_camera_params
+
+    def _eval_2d2d_residual(self, track_id, img_id, feat_id):
+        uv = self.features_[img_id].keypoints[feat_id].pt
+        ic_id = self.shared_ic_ids_[img_id]
+        params = [self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.rays_param_[track_id]]
+        if self.type_ == FactorType.PTZRay:
+            cost = PTZRayFactor(uv)
+        elif self.type_ == FactorType.PTZRayDist:
+            cost = PTZRayDistFactor(uv)
+        elif self.type_ == FactorType.PTZRayFxfyDist:
+            cost = PTZRayFxfyDistFactor(uv)
+        else:
+            cost = PTZRayDistDispFactor(uv)
+            params = [self.intrinsics_param_[ic_id], self.disp_param_, self.extrinsics_param_[img_id], self.rays_param_[track_id]]
+        residuals = np.zeros(2, dtype=np.float64)
+        cost.Evaluate(params, residuals, None)
+        return residuals
+
+    def _eval_2d3d_residual(self, img_id, obs_id):
+        ic_id = self.shared_ic_ids_[img_id]
+        if self.type_ == FactorType.PTZRayDistDisp:
+            cost = Reproj2d3dDispFactor(self.pixels_[img_id][obs_id], self.pts3d_[img_id][obs_id])
+            params = [self.intrinsics_param_[ic_id], self.disp_param_, self.extrinsics_param_[img_id], self.tlw_param_]
+        else:
+            cost = Reproj2d3dFactor(self.pixels_[img_id][obs_id], self.pts3d_[img_id][obs_id])
+            params = [self.intrinsics_param_[ic_id], self.extrinsics_param_[img_id], self.tlw_param_]
+        residuals = np.zeros(2, dtype=np.float64)
+        cost.Evaluate(params, residuals, None)
+        return residuals
+
+    def _cal_reproj_error(self):
+        if self.summary_ is not None and self.summary_.num_residuals > 0:
+            self.final_reproj_error_all_ = math.sqrt(2.0) * math.sqrt((2.0 * self.summary_.final_cost) / self.summary_.num_residuals)
+        self._cal_reproj_error_2d2d()
+        self._cal_reproj_error_2d3d()
+
+    CalReprojError = _cal_reproj_error
+
+    def _cal_reproj_error_2d2d(self):
+        total = 0.0
+        count = 0
+        for track_id, track in self.tracks_.items():
+            if track_id not in self.rays_param_:
+                continue
+            for img_id, feat_id in track.items():
+                if not self._is_candidate(img_id):
+                    continue
+                res = self._eval_2d2d_residual(track_id, img_id, feat_id)
+                total += float(res[0] * res[0] + res[1] * res[1])
+                count += 1
+        self.final_reproj_error_2d2d_ = math.sqrt(total / count) if count else 0.0
+
+    CalReprojError2d2d = _cal_reproj_error_2d2d
+
+    def _cal_reproj_error_2d3d(self):
+        total = 0.0
+        count = 0
+        for i in range(self.num_cams_):
+            if not self._is_candidate(i):
+                continue
+            if not self.pixels_ or i >= len(self.pixels_) or not self.pixels_[i]:
+                continue
+            for j in range(len(self.pixels_[i])):
+                res = self._eval_2d3d_residual(i, j)
+                total += float(res[0] * res[0] + res[1] * res[1])
+                count += 1
+        self.final_reproj_error_2d3d_ = math.sqrt(total / count) if count else 0.0
+
+    CalReprojError2d3d = _cal_reproj_error_2d3d
+
+    def final_reproj_error_all(self):
+        return self.final_reproj_error_all_
+
+    def final_reproj_error_2d2d(self):
+        return self.final_reproj_error_2d2d_
+
+    def final_reproj_error_2d3d(self):
+        return self.final_reproj_error_2d3d_

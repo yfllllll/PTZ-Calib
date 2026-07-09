@@ -5,7 +5,7 @@ Python port of the PTZ-Calib project for robust PTZ camera calibration.
 ## Requirements
 
 ```bash
-pip install numpy scipy opencv-python
+pip install numpy scipy opencv-python pyceres
 ```
 
 ## Project Structure
@@ -21,9 +21,8 @@ python/
 │   ├── krt_optimizer.py   # KRT optimization
 │   ├── ptzray_optimizer.py    # PTZ ray optimization
 │   └── ptz_incremental_optimizer.py  # Incremental BA
-├── scripts/               # Executable scripts
-│   ├── run_ptz_ba.py
-│   └── run_ptz_reloc.py
+├── run_ptz_ba.py          # PTZ-IBA + georeferencing entry point
+├── run_ptz_reloc.py       # PTZ relocalization entry point
 └── tests/                 # Unit tests
 ```
 
@@ -60,12 +59,11 @@ See original C++ project README for dataset download and usage examples.
 # Install dependencies
 pip install -r requirements.txt
 
-# Run PTZ Bundle Adjustment
+# Run PTZ Bundle Adjustment (matches the C++ CLI shape)
 python run_ptz_ba.py \
-  --features_dir data/features \
-  --matches_file data/matches.json \
-  --cameras_in data/cameras_init.json \
-  --cameras_out data/cameras_optimized.json \
-  --max_iter 100
+  --images data/images \
+  --features data/features \
+  --annotation data/annotation.json \
+  --output outputs \
+  --max_iter 200
 ```
-

@@ -70,6 +70,7 @@ def read_colmap_features(filepath: str) -> Tuple[List[cv2.KeyPoint], Optional[np
     if not os.path.isfile(filepath):
         return [], None
 
+
     try:
         with open(filepath, "r") as f:
             first = f.readline().split()
@@ -96,6 +97,9 @@ def read_colmap_features(filepath: str) -> Tuple[List[cv2.KeyPoint], Optional[np
     except Exception as e:
         logger.debug("Cannot read colmap features from %s: %s", filepath, e)
         return [], None
+
+
+ReadColmapFeatures = read_colmap_features
 
 
 def read_colmap_matches(
@@ -141,6 +145,9 @@ def read_colmap_matches(
         logger.debug("Cannot read colmap matches from %s: %s", filepath, e)
 
     return pairs_matches, img_pairs_name
+
+
+ReadColmapMatches = read_colmap_matches
 
 
 # --------------------------- JSON I/O ---------------------------
@@ -205,6 +212,9 @@ def save_to_json(
     except OSError as e:
         logger.error("Cannot write JSON to %s: %s", filepath, e)
         return False
+
+
+SaveToJson = save_to_json
 
 
 def _read_json_file(filepath: str) -> dict:
@@ -278,6 +288,9 @@ def read_from_json(
         return False, cameras, names, pixels, pts3d, sizes
 
 
+ReadFromJson = read_from_json
+
+
 def read_cam_from_json(
     filepath: str, names: List[str]
 ) -> Tuple[bool, List[Camera]]:
@@ -308,6 +321,9 @@ def read_cam_from_json(
     except Exception as e:
         logger.error("Exception in read_cam_from_json: %s", e)
         return False, cameras
+
+
+ReadCamFromJson = read_cam_from_json
 
 
 # --------------------------- image + feature loading ---------------------------
@@ -353,6 +369,9 @@ def load_imgs_and_features(
         return False, fnames, features, sizes
 
     return True, fnames, features, sizes
+
+
+LoadImgsAndFeatures = load_imgs_and_features
 
 
 def _cal_homography(
@@ -418,6 +437,9 @@ def load_matches_info(
     return True, matches_info
 
 
+LoadMatchesInfo = load_matches_info
+
+
 def load_annotation(
     annot_path: str, fnames: List[str]
 ) -> Tuple[bool, List[List[np.ndarray]], List[List[np.ndarray]]]:
@@ -438,6 +460,9 @@ def load_annotation(
         pts3d[idx] = gt_pts3d[i]
 
     return True, pixels, pts3d
+
+
+LoadAnnotation = load_annotation
 
 
 def save_registered_cam(
@@ -464,6 +489,9 @@ def save_registered_cam(
         pts3d_reg.append(pts3d[i] if i < len(pts3d) else [])
 
     return save_to_json(cameras_reg, names_reg, pixels_reg, pts3d_reg, out_path)
+
+
+SaveRegisteredCam = save_registered_cam
 
 
 def mkdir_ifnot_exist(path: str) -> None:
