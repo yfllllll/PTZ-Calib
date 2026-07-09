@@ -59,6 +59,17 @@ See original C++ project README for dataset download and usage examples.
 # Install dependencies
 pip install -r requirements.txt
 
+# Optional: install image matching dependency for data preparation
+pip install git+https://github.com/gmberton/vismatch.git
+
+# Prepare features and matches from images only
+python prepare_data_vismatch.py \
+  --images data/images \
+  --output data/features \
+  --pairing window \
+  --window 5 \
+  --matcher superpoint-lightglue
+
 # Run PTZ Bundle Adjustment (matches the C++ CLI shape)
 python run_ptz_ba.py \
   --images data/images \

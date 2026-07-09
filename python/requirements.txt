@@ -2,3 +2,5 @@ numpy>=1.20.0
 scipy>=1.7.0
 opencv-python>=4.5.0
 pyceres>=2.6
+# Optional for prepare_data_vismatch.py:
+# git+https://github.com/gmberton/vismatch.git
