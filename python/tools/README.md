@@ -5,8 +5,45 @@
 | 工具 | 用途 |
 |------|------|
 | **gcp_annotator.py** ⭐ | **地面控制点标注器**（2D图像 + 3D模型）→ 生成 `annotation.json` |
+| **spatial_gcp_annotator.py** ⭐ | **空间控制点标注器**（全景图/单图 + 正射影像/DSM/3D模型/手动XYZ） |
+| build_pano_homographies_vismatch.py | 用 vismatch 估计每张PTZ图像到全景图的单应矩阵 |
+| project_pano_gcp.py | 将全景图控制点批量投影到PTZ图像并生成 `annotation.json` |
 | control_point_picker.py | 纯3D模型点选（求解坐标系相似变换） |
 | apply_transformation.py | 批量应用相似变换到点/相机 |
+
+---
+
+## ⭐ 全景图/单图空间控制点工作流
+
+如果你不想给每张 PTZ 图像逐个标注控制点，可以先在全景图上标注空间控制点，再通过 vismatch 自动映射回每张原图。
+
+完整教程见：[SPATIAL_GCP_WORKFLOW.md](SPATIAL_GCP_WORKFLOW.md)
+
+最常用的全景路线：
+
+```bash
+# 1. 在全景图上标注空间控制点
+python spatial_gcp_annotator.py \
+    --target /data/pano/panorama.jpg \
+    --target_type panorama \
+    --output /data/gcp/pano_gcp.json \
+    --ortho /data/map/ortho.png \
+    --ortho_extent "500000,3456000,501000,3457000" \
+    --dsm /data/map/dsm.npy
+
+# 2. 匹配每张PTZ图像到全景图
+python build_pano_homographies_vismatch.py \
+    --images /data/ptz_images \
+    --panorama /data/pano/panorama.jpg \
+    --output /data/gcp/pano_homographies.json
+
+# 3. 批量生成PTZ-Calib annotation.json
+python project_pano_gcp.py \
+    --pano_gcp /data/gcp/pano_gcp.json \
+    --mappings /data/gcp/pano_homographies.json \
+    --images /data/ptz_images \
+    --output /data/gcp/annotation.json
+```
 
 ---
 
