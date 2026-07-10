@@ -195,7 +195,7 @@ python spatial_gcp_annotator.py \
 }
 ```
 
-### 1.3 匹配每张 PTZ 图像到全景图
+### 1.3 可选：匹配每张 PTZ 图像到全景图
 
 ```bash
 python build_pano_homographies_vismatch.py \
@@ -217,7 +217,24 @@ python build_pano_homographies_vismatch.py \
 
 如果某些图像和全景重叠太少、纹理太弱或匹配质量差，会被写进 `skipped` 字段。
 
+如果全景图是由 `build_panorama_opencv.py` 生成的，正式流程不需要这一步；后续反投影会直接使用 `.opencv_params.json` 里的 OpenCV camera/warper 参数。这一步只作为外部全景图或通用单应矩阵备用方案。
+
 ### 1.4 批量生成 PTZ-Calib 的 annotation.json
+
+OpenCV detailed panorama 正式路线：
+
+```bash
+python project_opencv_pano_gcp.py \
+  --pano_gcp /data/gcp/pano_gcp.json \
+  --params /data/pano/panorama.opencv_params.json \
+  --images /data/ptz_images \
+  --output /data/gcp/annotation.json \
+  --min_points 4
+```
+
+它会把全景标注点先还原到 OpenCV blender 的全局画布坐标，再用每张图的 `PyRotationWarper.buildMaps()` 反查到源图像像素坐标。这样和 OpenCV detailed panorama 的 spherical/cylindrical/plane warper 保持一致，不退化为单应性近似。
+
+如果你使用的是外部全景图，没有 OpenCV params，才使用备用单应矩阵路线：
 
 ```bash
 python project_pano_gcp.py \
@@ -239,7 +256,7 @@ python run_ptz_ba.py \
   --dist
 ```
 
-旁边还会生成 `annotation.summary.json`，用于检查每张图像最终投影到了几个控制点。建议每张图像至少 4 个点，且点位尽量分散。
+旁边还会生成 summary JSON，用于检查每张图像最终投影到了几个控制点。建议每张图像至少 4 个点，且点位尽量分散。
 
 ## 2. 单张图像标注路线
 

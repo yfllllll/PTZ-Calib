@@ -539,7 +539,24 @@ def _create_blender(args, dst_roi):
     return blender
 
 
-def _save_stitch_params(path, args, image_names, indices, cameras, warped_image_scale, corners, crop_box, output_shape, full_sizes):
+def _save_stitch_params(
+    path,
+    args,
+    image_names,
+    indices,
+    cameras,
+    warped_image_scale,
+    corners,
+    crop_box,
+    output_shape,
+    full_sizes,
+    warped_sizes,
+    blend_roi,
+    work_scale,
+    seam_scale,
+    compose_scale,
+    compose_work_aspect,
+):
     data = OrderedDict(
         [
             ("version", "1.0"),
@@ -550,10 +567,16 @@ def _save_stitch_params(path, args, image_names, indices, cameras, warped_image_
             ("output", args.output),
             ("warp", args.warp),
             ("warped_image_scale", float(warped_image_scale)),
+            ("work_scale", float(work_scale)),
+            ("seam_scale", float(seam_scale)),
+            ("compose_scale", float(compose_scale)),
+            ("compose_work_aspect", float(compose_work_aspect)),
+            ("blend_roi", [int(v) for v in blend_roi]),
             ("corners_before_crop", [[int(c[0]), int(c[1])] for c in corners]),
             ("crop_box", [int(v) for v in crop_box]),
             ("output_shape", [int(v) for v in output_shape]),
             ("full_sizes", [[int(w), int(h)] for w, h in full_sizes]),
+            ("warped_sizes", [[int(w), int(h)] for w, h in warped_sizes]),
             (
                 "cameras",
                 [
@@ -563,6 +586,7 @@ def _save_stitch_params(path, args, image_names, indices, cameras, warped_image_
                             ("aspect", float(cam.aspect)),
                             ("ppx", float(cam.ppx)),
                             ("ppy", float(cam.ppy)),
+                            ("K_compose", (cam.K().astype(float) * np.array([[compose_work_aspect, 1.0, compose_work_aspect], [1.0, compose_work_aspect, compose_work_aspect], [1.0, 1.0, 1.0]])).tolist()),
                             ("R", cam.R.astype(float).tolist()),
                             ("t", cam.t.astype(float).reshape(-1).tolist() if hasattr(cam, "t") else []),
                         ]
@@ -678,6 +702,12 @@ def build_panorama(args):
         crop_box,
         result.shape,
         full_sizes,
+        final_sizes,
+        dst_roi,
+        work_scale,
+        seam_scale,
+        compose_scale,
+        compose_work_aspect,
     )
     report = OrderedDict(
         [

@@ -9,7 +9,8 @@
 | **build_panorama_opencv.py** ⭐ | 基于 OpenCV detailed stitching 生成全景图（相机估计 + BA + warper + seam + blender） |
 | build_panorama_vismatch.py | 用 vismatch 按图像顺序生成简易全景图（快速诊断，不作为首选全景方案） |
 | build_pano_homographies_vismatch.py | 用 vismatch 估计每张PTZ图像到全景图的单应矩阵 |
-| project_pano_gcp.py | 将全景图控制点批量投影到PTZ图像并生成 `annotation.json` |
+| **project_opencv_pano_gcp.py** ⭐ | 用 OpenCV detailed panorama 参数将全景控制点反投影到源图像并生成 `annotation.json` |
+| project_pano_gcp.py | 基于单应矩阵将全景控制点批量投影到PTZ图像（通用备用方案） |
 | control_point_picker.py | 纯3D模型点选（求解坐标系相似变换） |
 | apply_transformation.py | 批量应用相似变换到点/相机 |
 
@@ -51,10 +52,10 @@ python build_pano_homographies_vismatch.py \
     --panorama /data/pano/panorama.jpg \
     --output /data/gcp/pano_homographies.json
 
-# 3. 批量生成PTZ-Calib annotation.json
-python project_pano_gcp.py \
+# 3. 使用 OpenCV warper 参数反投影，生成PTZ-Calib annotation.json
+python project_opencv_pano_gcp.py \
     --pano_gcp /data/gcp/pano_gcp.json \
-    --mappings /data/gcp/pano_homographies.json \
+    --params /data/pano/panorama.opencv_params.json \
     --images /data/ptz_images \
     --output /data/gcp/annotation.json
 ```
