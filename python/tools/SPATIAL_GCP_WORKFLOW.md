@@ -32,6 +32,12 @@
 
 当前这里先实现一个更通用的版本：不依赖 stitching 内部状态，而是用 `vismatch` 直接匹配每张 PTZ 图像和全景图，再用 RANSAC 估计 `image -> panorama` 单应矩阵。这样全景图来源更自由，后续也可以替换成 stitching 输出的精确 warper 参数。
 
+`build_panorama_opencv.py` 的 matcher 是可插拔的：
+
+- `--matcher homography`：使用 OpenCV 自带 `BestOf2NearestMatcher`。
+- `--matcher affine`：使用 OpenCV affine matcher。
+- `--matcher vismatch`：使用 vismatch 中指定的模型生成 pairwise matches，再转成 OpenCV `MatchesInfo`，后续仍然交给 OpenCV 的 estimator/BA/warper/seam/blender。
+
 生成全景图：
 
 ```bash
@@ -40,6 +46,9 @@ python build_panorama_opencv.py \
   --images /data/ptz_images \
   --output /data/pano/panorama.jpg \
   --features sift \
+  --matcher vismatch \
+  --vismatch_matcher superpoint-lightglue \
+  --rangewidth 1 \
   --work_megapix 0.6 \
   --seam_megapix 0.1 \
   --compose_megapix -1 \
@@ -48,10 +57,12 @@ python build_panorama_opencv.py \
   --blend multiband
 ```
 
+这里的 `--rangewidth 1` 表示只匹配相邻序号图像，适合按 PTZ 扫描顺序排列的图片。若图像顺序不可靠或重叠关系更复杂，可以设为 `-1` 让所有图像两两匹配，但跨视角 pair 可能会干扰 OpenCV 的 BA；工具会在报告里记录每对外部匹配的质量。
+
 输出旁边会生成：
 
 - `panorama.opencv_params.json`：OpenCV 优化后的相机参数、warper 尺度、每张图 warped corner、裁剪框。
-- `panorama.opencv_report.json`：本次拼接配置和输出尺寸摘要。
+- `panorama.opencv_report.json`：本次拼接配置、输出尺寸摘要，以及外部 matcher 的 raw matches、RANSAC inliers、投影到 OpenCV features 后的 inliers。
 
 如果图像上下有时间戳、水印、天空或地面大面积干扰，可以排除这些区域参与特征检测：
 
@@ -64,6 +75,8 @@ python build_panorama_opencv.py \
 ```
 
 `build_panorama_vismatch.py` 仍然保留，但它只是快速诊断工具，采用相邻图像单应链式拼接，容易累积漂移，不作为正式全景方案首选。
+
+注意：当 `--matcher vismatch` 时，工具默认仍会先尝试 OpenCV bundle adjustment。如果 OpenCV BA 对外部 matcher 生成的匹配图不稳定并触发内部错误，工具会自动 fallback 到 estimator-only 相机继续完成 warper、seam 和 blender，并在 report 的 `ba_status` 中记录，例如 `ray_failed_fallback_none`。如果你希望失败时直接中断，可以加 `--no_ba_fallback`。
 
 ### 1.2 在全景图上标注空间控制点
 

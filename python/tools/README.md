@@ -29,6 +29,9 @@ python build_panorama_opencv.py \
     --images /data/ptz_images \
     --output /data/pano/panorama.jpg \
     --features sift \
+    --matcher vismatch \
+    --vismatch_matcher superpoint-lightglue \
+    --rangewidth 1 \
     --warp spherical \
     --seam gc_color \
     --blend multiband
