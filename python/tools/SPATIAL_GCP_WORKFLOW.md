@@ -26,24 +26,44 @@
 
 ### 1.1 准备全景图
 
-可以先用 `build_panorama_vismatch.py` 生成一个简易全景图，也可以用你的 stitching 仓库生成更完整的全景图。那个仓库里 `test.py` 的 `map_point_to_panorama` 体现了一个更严格的思路：保存 stitching 的相机参数、warper 和角点信息后，把原图像素映射到全景坐标。
+可以先用 `build_panorama_opencv.py` 生成全景图。它参考你的 stitching 仓库和 OpenCV `stitching_detailed.py` 的流程，不是简单链式单应拼接，而是走 OpenCV 的相机估计、束调整、wave correction、warper、曝光补偿、seam finder 和 blender。
+
+你的 stitching 仓库里 `test.py` 的 `map_point_to_panorama` 体现了一个更严格的思路：保存 stitching 的相机参数、warper 和角点信息后，把原图像素映射到全景坐标。当前工具也会输出 `.opencv_params.json`，保存相机和 warper 参数，后续可以直接用这些参数做原图和全景之间的严格坐标映射。
 
 当前这里先实现一个更通用的版本：不依赖 stitching 内部状态，而是用 `vismatch` 直接匹配每张 PTZ 图像和全景图，再用 RANSAC 估计 `image -> panorama` 单应矩阵。这样全景图来源更自由，后续也可以替换成 stitching 输出的精确 warper 参数。
 
-按图像顺序生成全景图：
+生成全景图：
 
 ```bash
 cd python/tools
-python build_panorama_vismatch.py \
+python build_panorama_opencv.py \
   --images /data/ptz_images \
   --output /data/pano/panorama.jpg \
-  --matcher superpoint-lightglue \
-  --resize 1024 \
-  --min_matches 20 \
-  --min_inliers 12
+  --features sift \
+  --work_megapix 0.6 \
+  --seam_megapix 0.1 \
+  --compose_megapix -1 \
+  --warp spherical \
+  --seam gc_color \
+  --blend multiband
 ```
 
-这个工具采用相邻图像链式拼接：第 `i` 张和第 `i+1` 张先匹配并估计单应矩阵，再统一变换到中心图像坐标系。它适合图像已经按 PTZ 扫描顺序排列、相邻视野有足够重叠的情况。输出旁边会生成 `panorama.report.json`，里面包含每一对相邻图像的匹配数、RANSAC 内点数和 RMSE。
+输出旁边会生成：
+
+- `panorama.opencv_params.json`：OpenCV 优化后的相机参数、warper 尺度、每张图 warped corner、裁剪框。
+- `panorama.opencv_report.json`：本次拼接配置和输出尺寸摘要。
+
+如果图像上下有时间戳、水印、天空或地面大面积干扰，可以排除这些区域参与特征检测：
+
+```bash
+python build_panorama_opencv.py \
+  --images /data/ptz_images \
+  --output /data/pano/panorama.jpg \
+  --exclude_top 0.15 \
+  --exclude_bottom 0.10
+```
+
+`build_panorama_vismatch.py` 仍然保留，但它只是快速诊断工具，采用相邻图像单应链式拼接，容易累积漂移，不作为正式全景方案首选。
 
 ### 1.2 在全景图上标注空间控制点
 

@@ -6,7 +6,8 @@
 |------|------|
 | **gcp_annotator.py** ⭐ | **地面控制点标注器**（2D图像 + 3D模型）→ 生成 `annotation.json` |
 | **spatial_gcp_annotator.py** ⭐ | **空间控制点标注器**（全景图/单图 + 正射影像/DSM/3D模型/手动XYZ） |
-| build_panorama_vismatch.py | 用 vismatch 按图像顺序生成简易全景图 |
+| **build_panorama_opencv.py** ⭐ | 基于 OpenCV detailed stitching 生成全景图（相机估计 + BA + warper + seam + blender） |
+| build_panorama_vismatch.py | 用 vismatch 按图像顺序生成简易全景图（快速诊断，不作为首选全景方案） |
 | build_pano_homographies_vismatch.py | 用 vismatch 估计每张PTZ图像到全景图的单应矩阵 |
 | project_pano_gcp.py | 将全景图控制点批量投影到PTZ图像并生成 `annotation.json` |
 | control_point_picker.py | 纯3D模型点选（求解坐标系相似变换） |
@@ -23,10 +24,14 @@
 最常用的全景路线：
 
 ```bash
-# 0. 如果还没有全景图，先按图像顺序生成一个
-python build_panorama_vismatch.py \
+# 0. 如果还没有全景图，先用 OpenCV detailed stitching 生成
+python build_panorama_opencv.py \
     --images /data/ptz_images \
-    --output /data/pano/panorama.jpg
+    --output /data/pano/panorama.jpg \
+    --features sift \
+    --warp spherical \
+    --seam gc_color \
+    --blend multiband
 
 # 1. 在全景图上标注空间控制点
 python spatial_gcp_annotator.py \
