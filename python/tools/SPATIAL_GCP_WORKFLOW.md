@@ -26,16 +26,30 @@
 
 ### 1.1 准备全景图
 
-可以先用你的 stitching 仓库生成全景图。那个仓库里 `test.py` 的 `map_point_to_panorama` 体现了一个更严格的思路：保存 stitching 的相机参数、warper 和角点信息后，把原图像素映射到全景坐标。
+可以先用 `build_panorama_vismatch.py` 生成一个简易全景图，也可以用你的 stitching 仓库生成更完整的全景图。那个仓库里 `test.py` 的 `map_point_to_panorama` 体现了一个更严格的思路：保存 stitching 的相机参数、warper 和角点信息后，把原图像素映射到全景坐标。
 
 当前这里先实现一个更通用的版本：不依赖 stitching 内部状态，而是用 `vismatch` 直接匹配每张 PTZ 图像和全景图，再用 RANSAC 估计 `image -> panorama` 单应矩阵。这样全景图来源更自由，后续也可以替换成 stitching 输出的精确 warper 参数。
+
+按图像顺序生成全景图：
+
+```bash
+cd python/tools
+python build_panorama_vismatch.py \
+  --images /data/ptz_images \
+  --output /data/pano/panorama.jpg \
+  --matcher superpoint-lightglue \
+  --resize 1024 \
+  --min_matches 20 \
+  --min_inliers 12
+```
+
+这个工具采用相邻图像链式拼接：第 `i` 张和第 `i+1` 张先匹配并估计单应矩阵，再统一变换到中心图像坐标系。它适合图像已经按 PTZ 扫描顺序排列、相邻视野有足够重叠的情况。输出旁边会生成 `panorama.report.json`，里面包含每一对相邻图像的匹配数、RANSAC 内点数和 RMSE。
 
 ### 1.2 在全景图上标注空间控制点
 
 只手动输入 XYZ：
 
 ```bash
-cd python/tools
 python spatial_gcp_annotator.py \
   --target /data/pano/panorama.jpg \
   --target_type panorama \
